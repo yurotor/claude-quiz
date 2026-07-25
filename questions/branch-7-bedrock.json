@@ -21,13 +21,13 @@
     "difficulty": 2,
     "question": "When Claude Code runs against Bedrock, where do its credentials come from?",
     "options": [
-      "An Anthropic API key exported as ANTHROPIC_API_KEY",
+      "An Anthropic API key exported as ANTHROPIC_API_KEY, which Claude Code exchanges for temporary AWS credentials at session start",
       "The standard AWS SDK credential chain — environment keys, ~/.aws profiles, SSO, or an attached IAM role",
       "A token you paste during the /login flow, stored by the harness",
       "A Bedrock password saved in plain text in the project's settings.json"
     ],
     "correctIndex": 1,
-    "explanation": "On Bedrock, Claude Code authenticates the way any AWS SDK client does: it walks the default credential provider chain — explicit env vars, shared config/credentials files, SSO-backed profiles, or instance/role credentials — and signs requests with what it finds (an AWS Bearer token for Bedrock API keys is the one alternative outside the chain). No Anthropic account is involved at all, which is why /logout isn't even available in a Bedrock session. ANTHROPIC_API_KEY is the Anthropic-direct mechanism and is ignored for Bedrock traffic, and /login pairs with Anthropic accounts and subscriptions, not AWS. This is the core setup delta: identity and billing move entirely to the AWS side, while the harness above the API layer behaves identically."
+    "explanation": "On Bedrock, Claude Code authenticates the way any AWS SDK client does: it walks the default credential provider chain — explicit env vars, shared config/credentials files, SSO-backed profiles, or instance/role credentials — and signs requests with what it finds (an AWS Bearer token for Bedrock API keys is the one alternative outside the chain). No Anthropic account is involved at all, which is why /logout isn't even available in a Bedrock session. ANTHROPIC_API_KEY is the Anthropic-direct mechanism and is ignored for Bedrock traffic, and /login pairs with Anthropic accounts and subscriptions, not AWS. This is the core setup delta: identity and billing move entirely to the AWS side, while the harness above the API layer behaves identically. No mechanism exchanges an Anthropic key for AWS credentials — the two identity systems never bridge."
   },
   {
     "id": "7.1-L2-03",
@@ -36,7 +36,7 @@
     "difficulty": 2,
     "question": "Mid-afternoon, your Bedrock-backed Claude Code session starts failing with credential-expired errors — your AWS SSO token has timed out. What is the fix?",
     "options": [
-      "Run /login to re-authenticate with your Anthropic account",
+      "Run /login again and choose Amazon Bedrock so the harness stores a refreshed session token",
       "Rotate your ANTHROPIC_API_KEY and restart",
       "Refresh your AWS credentials — e.g. run aws sso login, or let a configured awsAuthRefresh command do it",
       "Switch AWS_REGION to a region where your token is still valid"
@@ -52,7 +52,7 @@
     "question": "Which AWS region does Claude Code send its Bedrock requests to?",
     "options": [
       "Whichever region AWS automatically routes to for lowest latency",
-      "The region encoded inside your Bedrock API key",
+      "The region encoded inside your Bedrock API key — AWS_BEARER_TOKEN_BEDROCK credentials are minted per region and pin every request there",
       "Always us-east-1 — the region is fixed for Bedrock runtime calls",
       "The one resolved from AWS_REGION / AWS_DEFAULT_REGION or your active AWS profile's configured region"
     ],
@@ -67,7 +67,7 @@
     "question": "A colleague warns you: \"If you move to Bedrock, hooks and skills will stop working — those are Anthropic API features.\" What's wrong with that claim?",
     "options": [
       "Hooks, skills, CLAUDE.md, MCP and the rest are harness features that run on your machine; switching provider only changes where the assembled prompt is sent",
-      "They keep working, but each one must be re-enabled with a per-feature Bedrock flag",
+      "They keep working, but each one must be re-enabled with a per-feature Bedrock flag in the env block of ~/.claude/settings.json — the /setup-bedrock wizard writes these for you",
       "Hooks keep working, but skills must be redeployed into your AWS account first",
       "Nothing — Bedrock only supports plain completions, so agentic features are unavailable"
     ],
@@ -96,7 +96,7 @@
     "difficulty": 3,
     "question": "Anthropic announces a new Claude model today. A teammate on the Anthropic API is already using it, but it isn't selectable in your Bedrock setup. What's the most likely reason?",
     "options": [
-      "Your Claude Code CLI version is too old to know the model exists",
+      "Your Claude Code CLI is stale — alias defaults are compiled in at release time, so a brand-new model can't be requested until you update the binary",
       "Your AWS support plan tier is too low for new models",
       "New models reach Bedrock on AWS's rollout schedule and need access enabled in your account and region — direct-API users often get them sooner",
       "The harness deliberately blocks brand-new models on third-party providers until they're certified"
@@ -111,7 +111,7 @@
     "difficulty": 3,
     "question": "Running Claude Code on Bedrock, you notice cache read/write token counts are always zero, while a colleague on the Anthropic API sees heavy cache traffic. What's the most plausible explanation?",
     "options": [
-      "Prompt caching requires an Anthropic API key, so it can never work on Bedrock",
+      "Prompt caching is negotiated with api.anthropic.com, so on Bedrock the harness strips cache_control breakpoints from requests and caching can never engage",
       "Caching only activates after your first /compact",
       "Bedrock caches silently and just doesn't report the token counts",
       "Prompt caching isn't available for that model/region combination on Bedrock — support varies by region — or it's been explicitly disabled"
@@ -128,7 +128,7 @@
     "options": [
       "You can opt in with ENABLE_PROMPT_CACHING_1H=1 — the 1-hour TTL bills cache writes at a higher rate than the 5-minute default",
       "Bedrock only offers a 1-hour TTL, so you get it automatically",
-      "TTL is a harness setting, so it behaves identically regardless of provider",
+      "TTL is a harness-side setting — the client stores and expires cache entries itself, so behavior is identical on any provider",
       "The TTL follows your Service Quotas tier — request a quota increase to unlock 1 hour"
     ],
     "correctIndex": 0,
@@ -141,7 +141,7 @@
     "difficulty": 4,
     "question": "Which statement about prompt-cache pricing structure holds on BOTH Bedrock and the Anthropic API?",
     "options": [
-      "Cache reads are free on both providers; you only ever pay for writes",
+      "Cache reads are free on both providers — reused prefix tokens are never billed; you pay only the one-time write premium (1.25× base for the 5-minute TTL) when the prefix is first stored",
       "Cache writes cost a premium over base input (1.25× for the 5-minute TTL) while cache reads cost a small fraction (~0.1×), so a cached prefix pays for itself after roughly one reuse",
       "Bedrock charges for cache reads but not writes; Anthropic does the reverse",
       "Caching discounts output tokens as well as input tokens"
@@ -159,7 +159,7 @@
       "The request errors with a cache-miss and you must resume the session",
       "The conversation history that was cached is lost, so the model forgets the early turns",
       "Nothing visible — the harness resends the full conversation as always, but the expired prefix is re-ingested and billed as a fresh cache write instead of cheap cache reads",
-      "Claude Code detects the expiry and auto-compacts to rebuild a smaller cache"
+      "Claude Code detects the TTL expiry, runs an automatic /compact to shrink the transcript, and re-marks cache breakpoints so the rebuilt, smaller prefix starts a fresh 5-minute window"
     ],
     "correctIndex": 2,
     "explanation": "What the server caches is KV/attention state — the computed internal representation of your prefix — keyed to the exact token sequence, and it evaporates when the TTL lapses (each hit had been refreshing the clock). Nothing about your conversation is lost, because the conversation never lived server-side: the harness holds the transcript locally and resends the whole thing every turn regardless. So the only consequence of expiry is economic: the next request finds no matching prefix, the server re-ingests everything at cache-write rates, and subsequent turns are cheap again. No error, no amnesia, no automatic compaction. This is the stateless loop doing exactly its job. On Bedrock the lever for coffee-break-heavy workflows is the 1-hour TTL opt-in (ENABLE_PROMPT_CACHING_1H=1), trading a higher write rate for far fewer expiry-driven re-writes."
@@ -173,7 +173,7 @@
     "options": [
       "Your Anthropic usage tier, which rises automatically with spend",
       "Your Claude subscription plan's weekly usage allowance",
-      "A single global Bedrock limit that's identical for every AWS account",
+      "A single Bedrock allowance per AWS account, pooled across all models and regions, so moving a workload between regions never changes your headroom",
       "Per-model, per-region AWS Service Quotas (tokens-per-minute and requests-per-minute), raisable via quota-increase requests"
     ],
     "correctIndex": 3,
@@ -187,7 +187,7 @@
     "question": "Mid-session, your Bedrock-backed Claude Code starts surfacing ThrottlingException errors. What does that mean, and what's the right response?",
     "options": [
       "You've exceeded your account's Bedrock quota for that model/region; the harness backs off and retries — longer term, request a quota increase or lean on cross-region inference",
-      "The conversation has outgrown the context window; run /compact to shrink it",
+      "The conversation has outgrown the context window — Bedrock surfaces overflow as ThrottlingException rather than a validation error; run /compact to shrink the transcript below the limit",
       "Your IAM role lost its bedrock:InvokeModel permission mid-session",
       "Anthropic's API is rate-limiting your organization's key"
     ],
@@ -204,7 +204,7 @@
       "Raise your Anthropic usage tier by increasing monthly spend",
       "Purchase Bedrock provisioned throughput (dedicated model units) and point Claude Code at its ARN as the model ID",
       "Enable the 1-hour cache TTL so requests consume fewer quota tokens",
-      "Set ANTHROPIC_BEDROCK_SERVICE_TIER=priority on every session"
+      "Set ANTHROPIC_BEDROCK_SERVICE_TIER=priority fleet-wide so every request runs on reserved capacity"
     ],
     "correctIndex": 1,
     "explanation": "Provisioned throughput is Bedrock's reserved-capacity product: you commit to dedicated model units and get guaranteed throughput that on-demand traffic can't contend with; Claude Code consumes it by using the provisioned ARN as the model identifier. The tempting near-miss is the priority service tier — that buys preferential processing on shared on-demand capacity, improving latency and reducing throttle probability, but it reserves nothing; under regional pressure you can still be throttled. Caching cuts cost and helps token-quota consumption but provides zero capacity guarantee, and Anthropic usage tiers belong to the other provider entirely — on Bedrock your spend history with Anthropic is irrelevant. This is the throughput-regime contrast in its sharpest form: Anthropic direct scales limits with tiers and enterprise agreements; Bedrock offers an explicit capacity-reservation purchase, priced and governed like any other AWS resource."
@@ -219,7 +219,7 @@
       "An availability-zone selector within your configured region",
       "A legacy naming artifact with no routing meaning",
       "A cross-region inference profile — AWS may route each request to any region in the US geography for capacity, and many bare foundation-model IDs can't even be invoked on-demand",
-      "Shorthand that only works when AWS_REGION is set to us-east-1"
+      "Shorthand for the US geography that resolves only when AWS_REGION is us-east-1 — in any other region you must invoke the bare foundation-model ID anthropic.claude-sonnet-4-5-20250929-v1:0 instead"
     ],
     "correctIndex": 2,
     "explanation": "The prefix denotes a cross-region (system-defined) inference profile: you still call your one regional endpoint, but AWS is free to fulfill each request from any region within that geography (us., eu., apac., us-gov.), pooling capacity so bursts in one region don't immediately throttle you. It's the opposite of pinning — it deliberately un-pins fulfillment for availability and throughput. It's also frequently mandatory: invoking many Claude models by bare foundation-model ID fails with \"on-demand throughput isn't supported,\" because on-demand access is offered through the inference profile. This has governance implications too — data may be processed in any region of the geography, which matters for strict residency requirements (application inference profiles and Guardrails are the finer-grained tools there). Anthropic direct has no analog: one global endpoint, no region arithmetic. Nothing about the prefix constrains or requires AWS_REGION=us-east-1."
@@ -233,7 +233,7 @@
     "options": [
       "On an invoice in the Anthropic console",
       "Against your Claude Pro/Max subscription allowance",
-      "In a separate Bedrock billing portal outside your AWS account",
+      "In a dedicated Bedrock billing console separate from Cost Explorer, with its own per-model usage dashboards",
       "On your regular AWS bill — visible in Cost Explorer, sliceable by account, tag, region, and model like any other AWS service"
     ],
     "correctIndex": 3,
@@ -248,7 +248,7 @@
     "options": [
       "Traffic can stay on private networking via VPC endpoints, under existing AWS IAM, compliance, and data-residency controls, billed on the existing AWS account",
       "Bedrock responses are faster because AWS caches model outputs at the edge",
-      "Bedrock receives new Claude models before the Anthropic API does",
+      "Bedrock receives new Claude models and betas before the Anthropic API does — AWS co-launches each Anthropic release across every commercial region on day one",
       "Bedrock's per-token prices are always lower than Anthropic's"
     ],
     "correctIndex": 0,
@@ -261,7 +261,7 @@
     "difficulty": 3,
     "question": "As a Bedrock admin, how do you enforce which Claude models your developers' Claude Code sessions can invoke?",
     "options": [
-      "Set model limits on the workspace in the Anthropic console",
+      "Set per-model limits on each team's workspace in the Anthropic console — Bedrock usage is metered against the workspace through your linked AWS account",
       "Scope IAM policies so bedrock:InvokeModel is allowed only on approved inference-profile/foundation-model ARNs, with CloudTrail for audit",
       "Add deny rules to each developer's project settings.json",
       "Maintain a model blocklist file inside ~/.claude/ on every machine"
@@ -279,7 +279,7 @@
       "They're right — AWS fine-tunes Claude on AWS-specific data before serving it",
       "Partially right — AWS quantizes the weights to save cost, so quality is slightly lower",
       "Wrong — Bedrock serves the same Anthropic model weights through AWS infrastructure; the real deltas are auth, billing, quotas, and rollout timing, not the model",
-      "Wrong, but for a different reason — Bedrock just proxies every request to Anthropic's own servers"
+      "Wrong, but for a different reason — Bedrock is a thin proxy that forwards every request to Anthropic's own servers, which is why responses match the Anthropic API exactly"
     ],
     "correctIndex": 2,
     "explanation": "Same weights, same model. Anthropic provides the model to AWS, and Bedrock hosts it — no fine-tuning, no quantized budget variant, no silent modification. Any response variation between providers is ordinary sampling variance, the same you'd see re-running one prompt twice on either provider. The proxy theory is wrong in the other direction: Bedrock genuinely runs inference on AWS infrastructure — that's precisely why VPC endpoints, data residency, and AWS compliance scope apply, which would be meaningless if requests bounced to Anthropic's servers. The durable deltas all sit at the API layer: how you authenticate (IAM vs API keys), who bills you (AWS vs Anthropic), how limits work (Service Quotas vs usage tiers), which TTLs and betas are offered, and when new models arrive. Anti-confusion invariant: Bedrock is a different door into the same room; never debug output quality by blaming the door."
@@ -293,7 +293,7 @@
     "options": [
       "Which prompt-cache TTL options are available by default",
       "When newly released Claude models become selectable",
-      "How your throughput limits are calculated and raised",
+      "How your throughput limits are calculated and raised — both providers meter per-minute token budgets that scale automatically with spend history",
       "The agentic loop itself — prompt assembly, the tool-use protocol, and the full-conversation resend every turn"
     ],
     "correctIndex": 3,

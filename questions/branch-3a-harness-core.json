@@ -36,10 +36,10 @@
     "difficulty": 3,
     "question": "Why is the tools → system → messages ordering of a request load-bearing rather than an arbitrary API convention?",
     "options": [
-      "The model parses the request in that order and errors out otherwise",
+      "The model attends to the request front-to-back, so tool definitions must precede any message that invokes them or the call is rejected as malformed",
       "Prompt caching matches a prefix, so most-stable-first maximizes the cached head; anything volatile placed early would invalidate everything after it",
       "The API rejects requests where the system prompt follows the messages array",
-      "It minimizes bandwidth by letting the server skip transmitting the stable parts"
+      "It minimizes bandwidth: the server acknowledges the cached prefix by hash, so the harness re-transmits only the volatile tail on each subsequent call"
     ],
     "correctIndex": 1,
     "explanation": "Prompt caching operates on prefixes: the server matches the request from its first byte up to a breakpoint and skips recomputing whatever matches. Ordering by stability — tool definitions (most stable), then system prompt and memory, then the volatile conversation tail — means the long stable head hits cache every call, billing around 0.1× instead of 1×. Put anything churning early (a timestamp in the system prompt, a reordering tool list) and every token after it re-bills. The bandwidth distractor is a classic misreading: cached tokens are still transmitted in full on every call; the saving is server-side recomputation, hence cost and latency — never bandwidth. In a stateless loop where the whole conversation is re-sent per call, the stability gradient IS the cache strategy, and the cache is what keeps the quadratic resend economically alive."
@@ -53,7 +53,7 @@
     "options": [
       "None — the system prompt is free because it is not counted as input tokens",
       "The model will get confused by seeing different times across turns",
-      "Only a few extra tokens per call, roughly the length of the timestamp",
+      "Only a few extra tokens per call — the timestamp itself is tiny, and because the system prompt sits behind a fixed cache breakpoint, the rest of the prefix keeps billing at the ~0.1× cache-read rate",
       "Every call invalidates the cached prefix from that point on, so the system prompt, and everything ordered after it, re-bills at cache-write rates each turn"
     ],
     "correctIndex": 3,
@@ -68,7 +68,7 @@
     "options": [
       "Assembly is curation: matching produces candidates, then a selector with a token budget decides what actually enters the request — and drops the rest on purpose",
       "A bug — every skill whose description matches the prompt must be injected",
-      "B and C were already in the server-side cache, so re-injecting them was unnecessary",
+      "B and C were already in the server-side prompt cache from an earlier call, so the selector skipped re-injecting them — the model reads them out of the cached prefix without their tokens being re-sent",
       "B and C were injected into a subagent's context instead of the main session"
     ],
     "correctIndex": 0,
@@ -82,7 +82,7 @@
     "question": "A colleague says: \"The session's .jsonl transcript is exactly the message array that gets sent to the model each turn.\" What's the correction?",
     "options": [
       "Correct — the harness streams the transcript file directly to the API",
-      "Wrong in the other direction — the transcript is smaller than the request",
+      "Wrong in the other direction — the transcript is strictly smaller: it keeps only the user and assistant messages, while every assembled request layers the system prompt, CLAUDE.md, tool schemas, and injected reminders on top of that same conversation",
       "Wrong — the transcript is a superset with many record types (mode changes, permission switches, file-history snapshots); the harness assembles the message array from a subset of it and adds injected content that was never in it",
       "Correct, except tool results are stripped before sending"
     ],
@@ -96,7 +96,7 @@
     "difficulty": 4,
     "question": "In the Claude Messages API request that the harness builds, what is the system prompt, structurally?",
     "options": [
-      "The first message in the messages array, with role \"system\"",
+      "The first message in the messages array, carrying role \"system\", which the API requires to appear before any user or assistant turn",
       "A separate top-level parameter of the request, alongside tools and messages — not a message at all",
       "A special content block type inside the first user message",
       "A header on the HTTP request, outside the JSON body"
@@ -112,7 +112,7 @@
     "question": "Mid-session, a new tool definition gets added to your request (say, a deferred MCP tool is loaded). Beyond the tokens of the definition itself, what is the subtler cost?",
     "options": [
       "The model must re-evaluate all prior tool calls against the new schema",
-      "Nothing subtler — tool definitions are excluded from caching entirely",
+      "Nothing subtler — tool definitions sit outside the cacheable span, which starts at the system parameter, so adding one changes only its own token count and leaves the cached prefix untouched",
       "The harness must restart the session to register the new tool",
       "The tools param sits earliest in the prefix, so changing it invalidates the cached prefix behind it — the next call re-processes and re-writes what used to be a cheap cache read"
     ],
@@ -128,7 +128,7 @@
     "options": [
       "A tool_use content block — an id, a tool name, and a JSON input — emitted as structured text, after which the model's turn ends",
       "A remote procedure call the model makes over an open socket to the harness",
-      "A special API endpoint the model invokes server-side before finishing its reply",
+      "A server-side invocation: the API pauses the generation, executes the named tool against its declared schema, and splices the output into the reply before the turn finishes",
       "A callback function the harness registers with the model at session start"
     ],
     "correctIndex": 0,
@@ -189,7 +189,7 @@
       "Wrong — the model emitted tool_use and its generation ended; the harness runs the command and the 'continuation' is a fresh, longer request carrying the tool_result",
       "Right — the API holds the connection open while the tool executes",
       "Right, except the model does other users' work while it waits",
-      "Wrong — the harness streams the command output into the model's still-open generation"
+      "Wrong — the harness streams the command's stdout into the model's still-open generation as it arrives, which is why output and commentary appear interleaved live in the terminal"
     ],
     "correctIndex": 0,
     "explanation": "The model never waits, because there is nothing to wait in: emitting tool_use is a stop condition, the generation ends, and the API call completes. Whatever time the command takes passes entirely on your machine, inside the harness. When output is ready, the harness assembles a new request — the whole conversation again, now with the tool_result appended as a user message — and the model reads it all as if for the first time, because it is the first time. 'Holds the connection open' and 'streams output into the open generation' both smuggle in a stateful, blocking call that the protocol simply doesn't have; the round-trip is two text blocks on two separate stateless requests. This is also why one user turn can quietly become dozens of full-priced model calls."
@@ -202,7 +202,7 @@
     "question": "A colleague asks: \"Why can't Anthropic just train the model to ignore malicious instructions inside files and web pages it reads?\" What's the strongest mechanistic answer?",
     "options": [
       "They could, but retraining for each attack pattern is too expensive",
-      "The harness already strips malicious instructions before the model sees them",
+      "The harness already sanitizes tool output before assembly — instruction-shaped text inside a fetched page or file is detected, flagged, and quarantined into a separate quoted block the model is trained to treat as inert data rather than commands",
       "Tool output re-enters as a user message on the same channel as your instructions; the protocol gives the model no marker separating data a tool returned from commands a human gave, so the distinction it would need doesn't exist in its input",
       "The model is required to treat all text as instructions by its system prompt"
     ],
@@ -219,7 +219,7 @@
       "The model tracks its outstanding requests and re-issues any that go unanswered",
       "The protocol: a tool_use left without a matching tool_result in the next request is malformed input the API rejects, so the harness must answer every request — even a failure becomes a tool_result with is_error",
       "Coincidence — the counts drift apart in longer sessions",
-      "A background reconciliation job in the harness that patches missing results at session end"
+      "A reconciliation pass in the harness: at the end of each turn it scans the transcript for unanswered tool_use ids and back-fills synthetic tool_result records before the next assembly, keeping the tape consistent on disk"
     ],
     "correctIndex": 1,
     "explanation": "The pairing is a protocol invariant, not good luck. When an assistant message contains tool_use blocks, the following user message must supply a tool_result for each id — a dangling request makes the conversation malformed, and the API errors on it. So the harness cannot simply skip a tool that failed, was denied by permissions, or was interrupted: it must still send back a tool_result, using is_error: true or explanatory content to say what happened. That is why the counts match to the block across thousands of calls. The 'model re-issues requests' distractor fails on statelessness — the model has no memory of outstanding requests between calls; it only ever sees what the current message array contains. Understanding this invariant explains oddities like why a rejected permission prompt still produces a visible result message in the conversation."
@@ -231,7 +231,7 @@
     "difficulty": 1,
     "question": "What is the CLAUDE.md file for?",
     "options": [
-      "It is Claude Code's changelog, describing what changed in each release",
+      "It is Claude Code's changelog — a file the installer refreshes on every update, describing what changed in each release of the CLI you have installed",
       "It stores your API credentials so the CLI can authenticate",
       "It is a log Claude writes to summarize what it did in each session",
       "It holds project instructions and context — memory that Claude Code loads into the model's context so it follows your conventions"
@@ -261,7 +261,7 @@
     "difficulty": 2,
     "question": "You have a user-level CLAUDE.md in ~/.claude/ and a project CLAUDE.md in your repo, with different content. What does the model see?",
     "options": [
-      "Only the project file — more specific scope overrides the global one",
+      "Only the project file — as with settings.json scalars, the more specific scope wins and the global file is discarded for this repo",
       "Both — CLAUDE.md scopes are additive, so global and project content concatenate into context together",
       "Only the user file — it loads first and locks out later ones",
       "Whichever file was modified most recently"
@@ -307,9 +307,9 @@
     "question": "A colleague says: \"claude --resume restores the session exactly as it was — the next request picks up byte-identical to where we stopped.\" What's the correction?",
     "options": [
       "Resume is a reconstruction, not a restore: the harness replays the transcript to rebuild the conversation but re-assembles the request NOW — current date, current tool list, fresh injected reminders — so the next request is not byte-identical to a live continuation",
-      "Correct — the transcript stores the exact request bytes, and resume re-sends them",
+      "Correct — the transcript records every assembled request beside the reply it produced, precisely so --resume can re-send the most recent request byte-for-byte and re-establish the exact cached prefix, tool list, and pricing the session was using before it stopped",
       "Wrong, because resume only restores the last 10 messages",
-      "Correct, as long as you resume on the same machine"
+      "Correct, as long as you resume on the same machine — transcripts and file-history snapshots are all local, so nothing can differ unless you switch hosts"
     ],
     "correctIndex": 0,
     "explanation": "What persists is the transcript — the durable record. What the model sees is always a reconstruction built fresh at assembly time. On --resume, the harness reads the JSONL to recover the user/assistant history, but everything else is resolved against the present: today's date in env info, whatever tools and MCP servers are configured now, newly injected system-reminders, the current system prompt version. The transcript couldn't be replayed byte-for-byte even in principle — it never stored the assembled request (no system param, no tools param), only the tape the request gets built from. One practical corollary: after a long idle, the reconstructed prefix no longer matches any server-side cache entry (TTL-evicted anyway), so the first resumed call takes a full-price cache-write on the whole history. 'The session is saved' is true; 'the context is restored' is not — it's rebuilt."
@@ -321,7 +321,7 @@
     "difficulty": 3,
     "question": "From a data-privacy standpoint, which statement about Claude Code's on-disk state is accurate?",
     "options": [
-      "Transcripts are encrypted at rest with a key derived from your login",
+      "Transcripts are encrypted at rest with a key derived from your login, so the on-disk files are unreadable until the harness decrypts them for --resume; only the assembled request ever leaves the machine in the clear",
       "Everything under ~/.claude/ is plaintext — transcripts include anything you pasted into a session — and none of it is uploaded as a side effect of a turn; only the assembled request crosses the wire",
       "The ~/.claude/ directory is synced to Anthropic's servers for backup",
       "Only token counts are written to disk; message content is kept in memory"
@@ -339,7 +339,7 @@
       "settings.json only takes effect after restarting the session",
       "The rules need to be under a special \"rules\" key to be recognized",
       "settings.json is harness-shaping config — it never crosses the wire, so the model cannot see rules placed there; instructions the model must act on belong in CLAUDE.md, which lands in the request",
-      "The project-level settings file is overriding their user-level rules"
+      "The project-level settings file is overriding their user-level rules — the project layer outranks the user layer in the precedence chain, so for overlapping keys the personal rules are discarded before the request is built"
     ],
     "correctIndex": 2,
     "explanation": "This is the landing axis doing its job. Every config surface either shapes the request (its content lands in the payload the model reads) or shapes the harness (it governs the loop and never leaves the machine). settings.json is squarely harness-side: model selection, permissions, hooks, UI — none of it is transmitted as content, so no amount of rewording rules inside it will help; the model cannot obey what it never receives. Rules the model must act on are request-shaping by definition and belong in CLAUDE.md, which the harness injects into the system layer on every call. The restart and precedence distractors assume the setting is reaching the model and merely resolving wrong — but the failure is categorical, not a tie-break. The two-bin test settles every case like this: if the model must see it, it's request-shaping; if it governs the loop, it's harness-shaping."
@@ -352,7 +352,7 @@
     "question": "A colleague asks three questions: \"Which CLAUDE.md wins, global or project? Which permission wins if user-level allows Bash but project-level denies it? Which model setting wins?\" What's the right framing?",
     "options": [
       "One rule covers all three: the most specific scope always wins",
-      "One rule covers all three: highest precedence layer wins",
+      "One rule covers all three: every surface resolves through the settings precedence chain (managed > CLI > local project > project > user), and the highest layer that defines a value wins while lower layers are discarded",
       "It's configurable — settings.json has a key that picks the resolution strategy",
       "Three different rules: CLAUDE.md files don't compete, they stack additively; permissions are deny-wins, so the deny prevails; model follows the settings precedence chain, highest layer wins"
     ],
@@ -369,7 +369,7 @@
       "Harness-landing: it redirects which door the request goes through; the assembled payload shape and content are unchanged, and the model sees nothing of it",
       "Request-landing: a Bedrock preamble is added to the system prompt so the model knows its provider",
       "Both: the tool list is swapped for Bedrock-specific tool definitions",
-      "Request-landing: the messages array is re-encoded into an AWS-specific format the model must parse"
+      "Request-landing: the harness re-encodes the messages array into Bedrock's Converse format, so the model reads a differently structured conversation even though the underlying content is unchanged"
     ],
     "correctIndex": 0,
     "explanation": "Provider selection is pure harness configuration: it changes the endpoint, auth mechanism (AWS credentials/IAM instead of an Anthropic key or OAuth), and model identifiers used on the wire — but it lands nowhere in the content the model reads. The same assembly runs, the same tools/system/messages structure ships (Bedrock wraps the same Anthropic-shaped payload), and the same weights answer; Bedrock is a different door to the same model, not a different model. Nothing tells the model which door was used, and no prompt wording can query or change it — the classic property of harness-landing config. Note the Bedrock delta on the resolution axis, though: this surface is env-var heavy (CLAUDE_CODE_USE_BEDROCK, AWS region and credential variables) rather than settings-file driven, so 'where is this configured?' has a different answer than for most other settings, even though 'what does the model see?' is still: nothing."
@@ -384,7 +384,7 @@
       "permissions — because the model can be told about them in CLAUDE.md",
       "enabledPlugins — it is harness-side configuration that never ships as content itself, yet it indirectly reshapes the request by adding skills, commands, and tool definitions that DO land in the payload",
       "model — because the chosen model name appears in the response metadata",
-      "cleanupPeriodDays — because trimming transcripts changes what gets resent"
+      "cleanupPeriodDays — nominally harness-side retention, yet by trimming old transcripts it changes what resume can reconstruct, reshaping the message array of any resumed session just as surely as a plugin's skills do"
     ],
     "correctIndex": 1,
     "explanation": "enabledPlugins sits in both bins at once: the key itself is harness config the model never sees, but toggling it changes what exists to be assembled — plugin skills add always-present descriptions, plugin MCP servers add tool definitions, plugin commands add invocable content. Its landing is indirect: it shapes the request by changing the inputs to assembly, not by being content. The distractors fail individually: describing permissions in CLAUDE.md doesn't make the permission system request-landing — the enforcement still happens in the harness, invisible to the model (and telling the model about rules it can't verify changes nothing mechanically). Response metadata isn't the request payload. And cleanupPeriodDays governs disk retention of old transcripts — it never alters what a live session resends, because assembly reads the current session's tape, not your archive. The refined test: does the setting change the bytes of any request, directly or by changing assembly's inputs?"

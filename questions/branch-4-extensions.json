@@ -9,7 +9,7 @@
       "Add \"always run the linter after editing files\" to the project CLAUDE.md",
       "Remind Claude at the start of every session to lint after each edit",
       "Configure a PostToolUse hook matching Edit|Write in settings.json that runs the linter",
-      "Create a skill whose description says it should be used after file edits"
+      "Create a skill whose frontmatter description instructs Claude to invoke it automatically after every Edit or Write tool call"
     ],
     "correctIndex": 2,
     "explanation": "A hook is a shell command the harness itself executes when a named loop event fires — here, PostToolUse after an Edit or Write. Because it runs in the harness process, not in the model, it is deterministic: it fires every time, regardless of what the model is paying attention to. CLAUDE.md instructions and session reminders are 'asking nicely' — they land in the prompt and the model usually complies, but compliance is probabilistic and degrades as context fills. A skill is also model-triggered: the model must choose to invoke it. This is the core hooks-vs-instructions distinction: if a behavior must be guaranteed, put it in the harness (a hook); if it only needs to usually happen, prompt-level instructions are fine and cheaper to maintain."
@@ -39,7 +39,7 @@
       "The tool call runs anyway; the exit code is only recorded in the debug log",
       "The tool call is blocked and the hook's stderr is fed back to the model as the error, so it can adjust its approach",
       "The whole session terminates immediately with an error",
-      "The harness retries the hook until it exits 0, then runs the tool"
+      "The harness retries the hook up to three times with exponential backoff, then runs the tool once the hook finally exits 0"
     ],
     "correctIndex": 1,
     "explanation": "Exit code 2 is the documented blocking signal. For PreToolUse it short-circuits the loop: the tool never executes, and whatever the hook wrote to stderr is returned to the model in place of a tool result. On the next request the model sees that rejection text and typically tries a different approach — the hook has steered the loop without consuming any context of its own until that moment. Exit 0 means success (stdout parsed for optional JSON decisions), and other non-zero codes are non-blocking errors surfaced to the user, not the model. Note the asymmetry with PostToolUse: exiting 2 there still shows stderr to the model, but cannot un-run a tool that already executed. Blocking is only possible at 'pre' seams."
@@ -51,8 +51,8 @@
     "difficulty": 3,
     "question": "A colleague claims: \"Our settings.json has a dozen hooks now — that's a dozen scripts' worth of extra tokens bloating every request.\" What's wrong with that?",
     "options": [
-      "Nothing — every configured hook's script is embedded in the system prompt each turn",
-      "The claim is wrong because hooks run on Anthropic's servers, so they bloat server load, not the request",
+      "Nothing — the harness embeds every configured hook's full script in the system prompt each turn so the model knows which commands fire at each lifecycle event",
+      "The claim is wrong because hooks execute on the provider's servers alongside the model, adding server-side load and latency but never consuming request tokens",
       "The claim is wrong because hooks consume output tokens, which are cheaper than input tokens",
       "Hooks are harness-side callbacks that cost zero context by default; only output a hook explicitly injects (e.g. UserPromptSubmit stdout) ever lands in the request"
     ],
@@ -81,10 +81,10 @@
     "difficulty": 2,
     "question": "What determines whether Claude Code triggers a skill on its own in the middle of a task?",
     "options": [
-      "The harness scans the skill's body for keywords matching the user's request",
+      "The harness scans each skill's body for keywords matching the user's request and injects the best-scoring body automatically",
       "The skill's frontmatter description, which is always present in context — the model matches the task against it and chooses to invoke",
       "The skill's file name must appear verbatim in the user's message",
-      "The harness runs a vector-similarity search over all installed skills each turn"
+      "The harness runs a vector-similarity search over every installed skill's body each turn and auto-loads any skill scoring above a relevance threshold"
     ],
     "correctIndex": 1,
     "explanation": "Skill triggering is a model decision, not a harness lookup. Every installed skill contributes its name and description to the assembled prompt on every turn; the body stays on disk. When the model judges that the current task matches a description, it invokes the skill, and only then does the harness load the body into context. This is why the description is the entire trigger surface: the model cannot be persuaded by brilliant instructions it hasn't loaded yet. There is no keyword scan, filename match, or embedding search in the harness — the 'retrieval' is just the model reading descriptions like any other prompt text. Consequences follow directly: vague descriptions cause missed or spurious triggering, and descriptions (unlike hook scripts) do cost a small amount of context per turn."
@@ -96,7 +96,7 @@
     "difficulty": 2,
     "question": "What is the key difference between a skill and a custom slash command in Claude Code?",
     "options": [
-      "Skills execute in the harness process, while commands execute inside the model",
+      "Skills execute as shell scripts in the harness process at lifecycle events, while commands are expanded by the model itself from its list of registered names",
       "Commands can take arguments, while skills cannot receive any input",
       "Skills are built into the product, while only commands can be user-defined",
       "A command runs only when the user explicitly invokes it, while a skill can also be chosen by the model because its description sits in context"
@@ -114,7 +114,7 @@
       "Nothing — skills are loaded only when triggered, so unused skills are free",
       "Their full bodies, since the model must read a skill to decide whether to use it",
       "Only their names and descriptions, which are part of the assembled prompt every turn; bodies load on invocation",
-      "A one-time cost at session start that the cache then makes permanently free"
+      "A one-time ingestion cost at session start, after which the prompt cache serves them for free without occupying any context-window space"
     ],
     "correctIndex": 2,
     "explanation": "This is progressive disclosure, the skill system's cost model. Descriptions are the always-paid part: they must be in every request so the model can choose among skills, and 40 of them is a real, recurring slice of your context window. Bodies are the pay-on-use part, loaded only when a skill is invoked. So 'unused skills are free' is wrong (descriptions aren't free), and 'full bodies every turn' is wrong (that's exactly what the design avoids). The caching option is half-true and that's the trap: because descriptions sit in the stable prefix, they're usually cache reads (~0.1× input price on both Anthropic and Bedrock), which makes them cheap in dollars — but cache reads still occupy context-window space and still get reprocessed into attention state. Cheap is not free, and window budget is separate from price."
@@ -128,7 +128,7 @@
     "options": [
       "Rewrite the frontmatter description to explicitly name the tasks and phrasings it should trigger on — the description is all the model sees before invoking",
       "Move the most important instructions to the top of the skill body",
-      "Convert the skill into a PreToolUse hook so the harness enforces it",
+      "Convert the skill into a PreToolUse hook so the harness fires its instructions deterministically whenever a matching tool call occurs, instead of relying on the model to trigger it",
       "Switch to a larger model, which reads skill bodies more thoroughly"
     ],
     "correctIndex": 0,
@@ -144,7 +144,7 @@
       "A hook that fires whenever a deployment-related tool call runs",
       "A skill that Claude will trigger automatically when deployment comes up",
       "A /deploy slash command whose markdown body is used as the prompt when invoked, available to anyone working in the repo",
-      "A background agent that watches the project for deploy events"
+      "A background subagent that the harness spawns at session start to watch the repository for deployment-related changes and act on them"
     ],
     "correctIndex": 2,
     "explanation": "Files in a project's .claude/commands/ directory become project-scoped slash commands, named after the file: deploy.md yields /deploy. Because the directory lives in the repo, the command travels with version control — every teammate who clones the project gets it, which is the main reason to prefer project scope over the personal ~/.claude/commands/ equivalent. Mechanically, invoking the command just expands the markdown into the prompt for that turn (optionally with frontmatter like allowed-tools or model); it is request-shaping text, nothing more. It is not a hook — nothing fires automatically on events — and not a skill: the model won't spontaneously invoke /deploy because command bodies aren't advertised in context the way skill descriptions are. The user types it, or it doesn't run."
@@ -158,7 +158,7 @@
     "options": [
       "They can't — custom commands are fixed prompts with no parameterization",
       "You put $ARGUMENTS (or positional $1, $2…) placeholders in the command file; the harness substitutes them into the prompt before sending",
-      "You declare an args: list in the frontmatter and the harness parses flags automatically",
+      "You declare an args: list in the command's frontmatter; the harness parses flags and named parameters against it and rejects invocations that don't match",
       "The model infers the arguments from recent conversation history"
     ],
     "correctIndex": 1,
@@ -171,7 +171,7 @@
     "difficulty": 2,
     "question": "When is a custom slash command a better choice than a skill?",
     "options": [
-      "When the model should discover and apply the behavior on its own during a task",
+      "When the model should notice mid-task that the behavior applies and invoke it on its own, based on a description advertised in every request",
       "When the workflow needs bundled helper scripts and reference files loaded progressively",
       "When the behavior must deterministically block certain tool calls",
       "When you want a short, reusable prompt that you fire explicitly at a moment you choose, with no need for the model to decide anything"
@@ -188,7 +188,7 @@
     "options": [
       "In the harness itself, like Bash or Read — all tools run locally",
       "In an external MCP server process (local or remote) that the harness routes the call to — a third executor alongside built-in and server-side tools",
-      "On the model provider's servers, in-request, like web_search",
+      "On the model provider's servers, executed in-request the way server-side tools like web_search are, with the result spliced into the response before it returns",
       "Inside the model, which simulates the tool from its training data"
     ],
     "correctIndex": 1,
@@ -203,7 +203,7 @@
     "options": [
       "Project scope — a .mcp.json file at the repo root, checked into version control; teammates approve it on first use",
       "Local scope — .claude/settings.local.json, which git automatically syncs",
-      "User scope — ~/.claude.json, which applies to all your projects",
+      "User scope — ~/.claude.json, which applies across all your projects and syncs to teammates through your organization's managed settings",
       "Enterprise scope — a shared file in the system-wide Claude directory"
     ],
     "correctIndex": 0,
@@ -217,7 +217,7 @@
     "question": "You're wiring up two MCP servers: a hosted SaaS endpoint and a small script on your own machine. Which transport fits each?",
     "options": [
       "Both should use stdio; the harness tunnels it over the network for the remote one",
-      "The remote server uses stdio over SSH; the local one uses HTTP on localhost",
+      "The remote server uses stdio tunneled over SSH by the harness; the local one runs an HTTP listener on localhost that the harness polls for results",
       "The remote server uses HTTP (SSE is deprecated); the local one uses stdio — the harness spawns the process and speaks over stdin/stdout",
       "The remote server uses gRPC; the local one uses a Unix socket"
     ],
@@ -231,9 +231,9 @@
     "difficulty": 3,
     "question": "A colleague on your Bedrock-based team says: \"We can't use MCP servers — MCP requires the Anthropic API and we route everything through AWS.\" What's the correct response?",
     "options": [
-      "They're right — MCP tool calls are executed on Anthropic's servers, which Bedrock traffic never reaches",
+      "They're right — MCP tool_use blocks are resolved on Anthropic's infrastructure before the response returns, and Bedrock traffic never reaches Anthropic's servers, so the calls have nowhere to execute",
       "They're right in practice — Bedrock strips tool_use blocks from responses, so MCP tools never fire",
-      "They're half right — MCP works on Bedrock but only with stdio servers, not remote ones",
+      "They're half right — stdio servers work anywhere since the harness spawns them locally, but remote HTTP servers authenticate through Anthropic's OAuth endpoints, which Bedrock-only environments can't reach",
       "They're wrong — MCP is harness-side and provider-agnostic; the model just emits tool_use, and the harness routes it to the server. Only if the MCP server itself calls an LLM does it need its own, separate credentials"
     ],
     "correctIndex": 3,
@@ -248,7 +248,7 @@
     "options": [
       "The tools parameter changes at the top of the request, so the cached prefix no longer matches — everything from that point on is re-written to cache at cache-write rates instead of read at ~0.1×",
       "None — tool definitions sit outside the cacheable region of the request",
-      "Only the 30 new schemas are uncached; each existing block keeps its cache entry independently",
+      "Only the 30 new schemas are written at cache-write rates; every existing block keeps its own independent cache entry, so the rest of the conversation is still served as ~0.1× reads on the next request",
       "The cache TTL resets, but all existing content is still served as cache reads"
     ],
     "correctIndex": 0,
@@ -264,7 +264,7 @@
       "It defers execution of MCP calls to the end of the turn so they can be batched into one request",
       "Hundreds of full tool schemas would bloat the tools parameter of every request; deferring sends only names up front, and the model pulls in full schemas on demand via a search tool",
       "It downloads tool implementations from the MCP server only when first called, saving disk space",
-      "It delegates deferred tools to the provider's servers so they execute without local round-trips"
+      "It hands deferred tools off to the provider's servers, where they execute inside the request itself, so the harness avoids a local round-trip for every MCP call and the loop stays fast"
     ],
     "correctIndex": 1,
     "explanation": "Every request resends the full tools parameter, and MCP servers can contribute hundreds of verbose JSON schemas — paid on every single turn of a stateless loop, whether or not any of those tools are used. Deferred loading is progressive disclosure applied to tools, the same trick skills use for bodies: keep a lightweight name-level index always present, and let the model call a search tool (ToolSearch) to fetch full schemas only when it actually needs one. Once fetched, the schema is in context and the tool is callable normally. The gains compound: a smaller request per turn, and a more stable prefix for caching, since the always-present portion changes less. The distractors misplace the mechanism — nothing about execution timing, disk storage, or provider-side execution changes; deferral is purely about what schema text enters the assembled request, and when."
@@ -277,7 +277,7 @@
     "question": "Claude Code spawns a subagent to investigate part of your task. What does that subagent see of your conversation so far?",
     "options": [
       "The full parent conversation history, shared in real time",
-      "An automatically compacted summary of the parent session",
+      "A summary of the parent session that the harness compacts automatically at spawn time, so key decisions and file context carry over",
       "Nothing but the task prompt it was handed — it runs a separate loop with its own context window and system prompt",
       "The last few parent messages, for continuity"
     ],
@@ -291,7 +291,7 @@
     "difficulty": 2,
     "question": "How do you define a custom subagent type (say, a \"security-reviewer\") that's available in every session of a project?",
     "options": [
-      "Add an \"agents\" array to the project's settings.json with the agent's prompt inline",
+      "Add an \"agents\" array to the project's settings.json, with each entry declaring the agent's name, tool allowlist, and system prompt inline for the harness to register at startup",
       "Add a \"## security-reviewer\" section to CLAUDE.md describing the role",
       "Configure an MCP server that registers itself as an agent",
       "Create a markdown file in .claude/agents/ with frontmatter (name, description, optionally tools and model) whose body becomes the agent's system prompt"
@@ -308,7 +308,7 @@
     "options": [
       "Only the subagent's final text report returned to the parent, as a single tool_result — results pass by value, and anything not in that report is gone from the parent's view",
       "They're right — subagents write their findings into the parent's context as they work",
-      "The parent can retrieve the subagent's full transcript into context whenever it wants to check a detail",
+      "The parent holds a reference to the subagent's transcript, and the harness pages the relevant portions back into the parent's context on demand whenever it needs to check a detail",
       "The file contents transferred, but compressed, so only approximate contents are available"
     ],
     "correctIndex": 0,
@@ -321,7 +321,7 @@
     "difficulty": 3,
     "question": "Which of these tasks is the strongest candidate for delegating to a subagent rather than doing inline in the main conversation?",
     "options": [
-      "Reading one known file to check a constant's value",
+      "Reading a single known file to check one constant's value, so that even that file's contents stay out of the parent's context window",
       "A sweeping search across many candidate files and naming conventions, where you only need the conclusion",
       "Making a small edit to the file you were just discussing",
       "Asking the user a clarifying question about requirements"
@@ -338,7 +338,7 @@
     "options": [
       "Nothing — providers bill subagent traffic at reduced background rates",
       "It's wrong only for output tokens; subagent input tokens genuinely aren't billed",
-      "Subagents are actually more expensive per token because they can't use prompt caching",
+      "Subagents are actually more expensive per token: each spawn starts a fresh conversation with no cached prefix to reuse, so none of their traffic ever gets the ~0.1× cache-read discount",
       "The subagent is its own stateless loop: every one of its turns resends its full growing history at normal rates. What you save is the parent's context growth, not the subagent's tokens"
     ],
     "correctIndex": 3,
@@ -352,7 +352,7 @@
     "question": "You fan a review task out to six parallel subagents instead of working through it in one session. What happens to your token consumption?",
     "options": [
       "Total tokens stay the same; they're just split six ways",
-      "Total tokens drop, since each agent has a smaller context than one big session would",
+      "Total tokens drop: each agent works in a small dedicated context, and the shared task briefing is deduplicated by the prompt cache across all six loops, so aggregate input shrinks",
       "It multiplies: six separate loops each resend their own growing context concurrently, so aggregate tokens — and especially tokens-per-minute — jump by roughly the fan-out factor",
       "Only output tokens increase; input tokens are deduplicated across the agents"
     ],
@@ -368,7 +368,7 @@
     "options": [
       "So each agent gets an isolated working copy and branch state — parallel edits, builds, and test runs don't clobber a shared checkout, and each result can be reviewed or merged independently",
       "So agents can't read each other's code, which is required for context isolation",
-      "Because a fresh worktree resets the prompt cache, making each agent's requests cheaper",
+      "Because each worktree gets its own prompt-cache prefix keyed on the directory path, so agents in separate worktrees get ~0.1× cache reads instead of invalidating each other's cached prefixes",
       "Because the harness cannot run more than one agent in a single directory"
     ],
     "correctIndex": 0,
@@ -383,8 +383,8 @@
     "options": [
       "Bedrock caps each AWS account at one model invocation at a time; parallel agents must be serialized",
       "All agents draw on the same account-and-region on-demand quotas (tokens- and requests-per-minute); fan-out multiplies concurrent consumption, so you hit ThrottlingException far sooner than single-session use ever did",
-      "Each subagent requires its own IAM role, and role-assumption rate limits are being exceeded",
-      "MCP servers used by the agents are hitting Anthropic-side rate limits that surface as AWS throttling"
+      "Each parallel subagent assumes its own scoped IAM role for isolation, and AWS STS rate-limits role assumption per account, so the fan-out exhausts the assume-role quota before most model calls fire",
+      "The MCP servers the agents share are hitting Anthropic-side rate limits, and the harness surfaces those upstream 429s as Bedrock ThrottlingExceptions, so the failures look like AWS throttling when they aren't"
     ],
     "correctIndex": 1,
     "explanation": "Bedrock on-demand capacity is metered per account per region as TPM/RPM quotas, and every agent in your fan-out spends from that one shared pool — the harness may see six independent conversations, but AWS sees one caller. Since each agent is a full loop resending its growing context, six agents multiply burst consumption roughly sixfold, and quota headroom that comfortably absorbed single sessions now produces ThrottlingException storms; the harness retries with backoff, so it often shows up first as agents mysteriously slowing down. There's no one-invocation cap, IAM roles don't multiply per subagent (all calls use the session's credentials), and MCP traffic never touches Bedrock's meters. Remedies map to the mechanism: cap parallelism, request quota increases, use cross-region inference profiles to widen the pool, or buy provisioned throughput. This is the fan-out cost multiplier expressed as a rate problem rather than a dollar problem."
@@ -396,7 +396,7 @@
     "difficulty": 3,
     "question": "You're building a nightly pipeline with fixed stages: triage failing tests → attempt fixes → run the suite → open a PR. Which construction fits best, and why?",
     "options": [
-      "One interactive session with a long prompt instructing the model to perform all four stages in order",
+      "One interactive session driven by a detailed prompt that walks the model through all four stages in order, explicitly instructing it to verify each stage's success before starting the next",
       "A single subagent given the entire pipeline as its task prompt",
       "A script that drives each stage as its own headless invocation (claude -p) or subagent — deterministic code owns the sequencing and gating; each stage starts with a clean, focused context",
       "Four skills, one per stage, and trust the model to trigger them in sequence"
@@ -412,9 +412,9 @@
     "question": "A colleague argues: \"Scripting workflows over subagents is pointless — one big session with everything in context is strictly better, because the model sees all the information at once.\" What's the strongest counter?",
     "options": [
       "Big sessions are impossible anyway, since the harness caps sessions at a fixed number of turns",
-      "They're right for the Anthropic API but wrong on Bedrock, where large contexts are unsupported",
-      "Subagent-based workflows are always cheaper in total tokens, which settles the question",
-      "\"Seeing everything\" is the liability: every turn resends the whole context at growing cost, instructions compete for attention amid the clutter, and compaction eventually discards detail lossily — decomposition gives each step a small fresh context and makes ordering deterministic"
+      "They're right on the Anthropic API but wrong on Bedrock, where the served context window is capped well below the model's native size, so a big-session workflow hits the ceiling and force-compacts before finishing",
+      "Subagent-based workflows are strictly cheaper in total tokens — every delegated step returns as one short summary instead of a long resend curve, so decomposition wins on cost no matter how entangled the work is, which settles the question",
+      "\"Seeing everything\" is the liability: every turn resends the whole context at growing cost, instructions compete with clutter for attention, and compaction eventually discards detail — decomposition gives each step a small fresh context and deterministic ordering"
     ],
     "correctIndex": 3,
     "explanation": "The claim assumes context is free and attention is uniform; neither holds. Mechanically, the stateless loop resends everything each turn, so a monolithic session's cost curve bends superlinearly while a decomposed workflow keeps each step's resend short. Behaviorally, a window stuffed with four subtasks' file dumps dilutes the instructions that matter now — long-context recall is real but not perfect, and it competes with noise. And structurally, the big session can't actually keep everything: hit the window limit and compaction folds history into a lossy summary, discarding exactly the kind of detail the 'sees it all' argument depends on. Decomposition converts sequencing from a probabilistic behavior into code, and passes forward only distilled results. The honest caveat: for genuinely entangled work where every part informs every other, one context can win — but that's a judgment about the task's structure, not a universal rule. The other options lean on invented facts: no turn cap exists, Bedrock serves the same context windows, and decomposition isn't always cheaper."

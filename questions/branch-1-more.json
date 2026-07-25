@@ -38,8 +38,8 @@
     "options": [
       "The failure output goes back into the loop as a tool result, and the model uses it to decide its next action",
       "The turn ends with an error, and you must describe the failure in a fresh prompt",
-      "The harness automatically retries the same command a few times before involving the model",
-      "The model rolls back its edits, since a failed verification cancels the current plan"
+      "The harness automatically retries the failing command up to three times with backoff, and only involves the model if the failures persist",
+      "The model rolls back its edits to the last passing state, since a failed verification automatically cancels the remainder of the current plan"
     ],
     "correctIndex": 0,
     "explanation": "A failed test is not an error condition for the agent — it is more information fed back into the loop. Anthropic describes the agentic cycle as gather context, take action, verify results: the harness runs the command, appends its output (including failures) as a tool result, and the model reads that result and decides what to do next — usually editing again and re-running. This mid-task course-correction is precisely what \"agentic\" buys you over a chatbot, where you would have to carry the failure back by hand. The retry option misplaces the intelligence: the harness executes mechanically and doesn't judge outcomes; deciding how to respond to a failure is the model's job on the next call. And nothing auto-cancels or rolls back — the loop simply continues until the model stops requesting actions."
@@ -51,7 +51,7 @@
     "difficulty": 1,
     "question": "Slash commands like /clear and /model are processed by which part of the system?",
     "options": [
-      "They are sent to the model as specially formatted chat messages",
+      "They are sent to the model as specially delimited chat messages that the system prompt teaches it to parse as commands",
       "The API layer interprets them and adjusts your server-side session",
       "They are handled locally by the CLI and harness — they never travel to the model as a prompt",
       "The model reads them like any message, but they are excluded from billing"
@@ -99,7 +99,7 @@
       "A request telling the server to delete your stored session history",
       "Nothing — /clear is a local harness action; the next model call simply carries an empty history",
       "A short system message instructing the model to disregard the prior conversation",
-      "A cache-invalidation call, so the old conversation stops billing at the cached rate"
+      "A cache-invalidation call that evicts your old prefix server-side, so the stale conversation stops billing at the cached read rate"
     ],
     "correctIndex": 1,
     "explanation": "There is nothing on the server to clear. The API is stateless — it never stored your conversation in the first place; the only reason the model knew your history was that the harness re-sent it on every call. So /clear works entirely locally: the harness stops including the old transcript, and the next request is assembled around an empty message history. The \"delete my history\" option fails because it presumes server-side session storage that doesn't exist — on Bedrock or Anthropic alike. The \"disregard\" message fails for the same reason and would be absurdly fragile besides. The cache option gets the mechanics backwards: the prompt cache is a short-TTL compute shortcut that simply expires when its prefix stops being sent — there's no invalidation call, and you were never billed for content you didn't send. Statelessness makes clearing free and instant."
@@ -127,8 +127,8 @@
     "question": "You closed Claude Code yesterday. Today you run claude --continue and it picks up the conversation exactly where you left off. Where did that continuity come from?",
     "options": [
       "The transcript saved on your disk under ~/.claude — the harness reloads it and re-sends it with the next call",
-      "The server-side prompt cache, which held your conversation overnight",
-      "Your session ID, which the API uses to restore the conversation on its side",
+      "The server-side prompt cache, which pinned your conversation's attention state overnight until the harness reclaimed it at startup",
+      "Your session ID, which the harness presents to the API so the server can restore the stored conversation on its side before the first new call",
       "The model, which retains recent conversations per account for a limited time"
     ],
     "correctIndex": 0,
@@ -187,7 +187,7 @@
     "question": "You step away for twenty minutes mid-session, past the 5-minute cache TTL. When you send your next message, what has actually been lost?",
     "options": [
       "Only compute savings — the next call pays cache-write on the prefix again, but no conversation content is lost, since the harness resends everything regardless",
-      "The conversation tail past the last cache breakpoint — the harness must rebuild that portion from the on-disk transcript before continuing",
+      "The conversation tail past the last cache breakpoint is dropped — the harness must rebuild that portion from the on-disk transcript and replay it before the session can continue",
       "The server-side copy of your context — the harness quietly opens a new conversation and re-primes it with a generated summary",
       "Nothing at all, including cost — expired entries are rebuilt free of charge the next time a matching prefix arrives"
     ],
@@ -201,10 +201,10 @@
     "difficulty": 3,
     "question": "The model emits a tool_use block requesting a destructive shell command your permission rules don't allow. Why can the permission system guarantee the command never runs, rather than merely discourage it?",
     "options": [
-      "The API screens outgoing tool_use blocks against the permission rules the harness uploads with each request",
+      "The API screens every outgoing tool_use block against the permission rules the harness uploads alongside each request, rejecting disallowed ones before they reach your machine",
       "A tool_use block is a request in structured text — inert until the harness, which enforces your rules locally, chooses to execute it",
       "The model consults the permission rules included in its system prompt and withholds blocks that would violate them",
-      "Disallowed tools are stripped from the schema before sending, so the model cannot produce a block naming them at all"
+      "Disallowed tools are stripped from the tool schema before every request, so the model is structurally incapable of producing a tool_use block that names them"
     ],
     "correctIndex": 1,
     "explanation": "Permissions get their leverage from where they sit on the turn's path: after the reply, before execution. A tool_use block is not an action — it's a structured description of a desired action, and nothing happens until the harness, on your machine, decides to run it. That's an enforcement point the model can't route around, which is the difference between a guarantee and a request. The system-prompt option describes \"asking nicely\": instructions influence what the model emits but bind nothing — a confused or injected model could still emit the block, and only harness-side checking makes that harmless. The API option attaches a real idea to the wrong layer: the transport carries message arrays and enforces nothing about your local rules, on Bedrock or Anthropic alike. Schema-stripping is a real hardening technique, but it isn't what permission rules do — the model can still name a gated tool; the harness just refuses or prompts you before executing."
@@ -217,7 +217,7 @@
     "question": "Early in a turn, a search tool returns a 40,000-token result. What is the cost consequence for the rest of the session?",
     "options": [
       "It bills once as output tokens, since a tool produced it — subsequent calls reference it for free",
-      "It bills once as input on the next call, then never again once it has been written to the prompt cache",
+      "It bills once as input on the next call, then never again — after the cache write, later calls reference the stored copy without retransmitting or rebilling it",
       "It affects only the current turn — the harness resets the conversation it sends at each turn boundary",
       "It is appended as a tool_result and re-sent on every later call, billing each time — cheaper once cached, but never free"
     ],
@@ -249,7 +249,7 @@
       "The model's reply ended with a tool_use block; the harness ran the read locally and started an entirely new API call with the longer array",
       "The response stream stayed open while the harness piped the file's contents into the model's in-progress generation",
       "The model fetched the file itself through a scoped filesystem channel the harness grants for the duration of the turn",
-      "The API suspended decoding, requested the file from the harness, and resumed the same response where it had stopped"
+      "The API suspended decoding at the tool_use block, requested the file from the harness over the open connection, and resumed the same response where it had stopped"
     ],
     "correctIndex": 0,
     "explanation": "There is no pause — there is a seam between two complete API calls. A model call is one self-contained request and one response: once the reply (ending in a tool_use block) finishes, that call is over. The harness executes the read locally, appends a tool_result as a user message, and issues a brand-new request carrying the entire conversation plus the new result. The model that answers has, as always, never seen any of it before. The other options all invent some form of mid-generation input: streaming is output-only (the request is fixed once sent), the model has no filesystem channel of any kind — it can only emit structured text asking — and the API cannot suspend and resume because it holds no state to resume from. The apparent \"pause\" is the fundamental unit of the agent loop: reply, execute, resend."
@@ -262,9 +262,9 @@
     "question": "You run `claude` with no flags inside a project directory. What do you get?",
     "options": [
       "A one-shot run: it analyzes the project, prints a report, and exits",
-      "A setup wizard that indexes your entire repository before anything else can happen",
+      "A first-run setup wizard that scans and indexes your entire repository into a local embeddings store before anything else can happen",
       "An interactive session in your terminal, where the agent works, asks permission when needed, and you steer",
-      "A background daemon that watches your files and suggests changes as you edit"
+      "A background daemon that watches your files for changes and proactively suggests edits in the terminal as you work"
     ],
     "correctIndex": 2,
     "explanation": "Plain `claude` opens the interactive REPL — the default way to drive the tool. You describe what you want, the agent works in its loop, permission prompts appear when it wants to do something your rules gate, and you can steer throughout: Escape interrupts the current action, and typing a correction mid-turn queues it for the model. Nothing is indexed up front — files enter the conversation only when the agent reads them mid-loop, which is part of why startup is instant. The one-shot behavior belongs to the -p (print) flag, which runs headless and exits — the CI pattern, not the default. And there's no watcher daemon; Claude Code acts when you ask, inside a session. Interactive mode is the right choice whenever the task is exploratory or you expect to course-correct."
@@ -279,7 +279,7 @@
       "It can read the image directly and can fetch the URL's content when needed — both become part of the conversation context",
       "It can fetch the URL but images are silently discarded, since the API is text-only end to end",
       "It can read the image, but URLs are never followed — the harness has no network access of its own",
-      "Neither works until you enable multimodal mode in settings; by default both are stripped before sending"
+      "Neither works until you enable multimodal mode in settings.json; by default the harness strips both images and URLs from the prompt before sending"
     ],
     "correctIndex": 0,
     "explanation": "Claude Code sessions are not text-only. Claude models are multimodal on the input side: an image pasted into the terminal is encoded as an image content block in the messages array and the model genuinely reads it — stack-trace screenshots, UI mockups, and diagrams are all legitimate inputs. URLs work differently: the model cannot reach the network itself, but the harness provides fetch tools, so Claude requests the page through a tool call and the result returns as a tool_result block in the next request. That distinction is the load-bearing part: images travel inside the request; web content arrives via the tool round-trip, subject to permissions. There is no 'multimodal mode' toggle, and nothing is silently discarded. This all works identically on Bedrock and the Anthropic API — multimodality is a property of the model weights, not the door you call them through."
@@ -291,9 +291,9 @@
     "difficulty": 2,
     "question": "Your nightly CI job runs `claude -p \"fix the lint errors and commit\"`, but the run stalls as soon as the agent tries to edit a file. What is the likely cause?",
     "options": [
-      "The -p flag disables editing tools, so headless runs can never modify files",
+      "The -p flag runs in read-only mode by design — headless invocations get search and read tools only, and can never modify files or run commands",
       "The edit needs a permission decision and no human is present — headless runs need permissions granted in advance via settings or flags",
-      "CI runners must complete an interactive /login before any tools unlock",
+      "CI runners must complete an interactive /login and device-code handshake before any mutating tools unlock, even with API keys configured",
       "The API rejects tool use on non-interactive requests as a safety measure"
     ],
     "correctIndex": 1,

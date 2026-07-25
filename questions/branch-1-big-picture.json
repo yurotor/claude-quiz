@@ -22,8 +22,8 @@
     "question": "Claude Code is often described as \"agentic.\" What does that specifically mean?",
     "options": [
       "It works in a loop — deciding on actions, using tools, observing results, and continuing until the task is done",
-      "It acts fully autonomously, never asking the user for permission",
-      "It keeps a persistent memory of you and your projects across all sessions",
+      "It acts fully autonomously from the moment you press enter, executing every file edit and shell command without ever pausing for user approval",
+      "It maintains a persistent server-side memory of you and your projects, carrying context forward automatically across all sessions and machines",
       "It coordinates several different models simultaneously to answer faster"
     ],
     "correctIndex": 0,
@@ -81,10 +81,10 @@
     "difficulty": 2,
     "question": "Your team switches Claude Code from the Anthropic API to AWS Bedrock. Which of the four layers actually changes?",
     "options": [
-      "The harness and the API layer — Bedrock ships its own agent loop",
+      "The harness and the API layer — Bedrock replaces the local agent loop with AWS-side orchestration running against its own regional endpoints",
       "The model layer — Bedrock serves a retrained AWS variant of Claude",
       "Only the API layer — auth, endpoint, and model IDs change; the CLI, harness, and model weights stay the same",
-      "All four layers, which is why Bedrock sessions behave noticeably differently"
+      "All four layers — Bedrock ships its own CLI build, request assembler, endpoints, and AWS-tuned weights, which is why sessions behave noticeably differently"
     ],
     "correctIndex": 2,
     "explanation": "Bedrock is a different door to the same model. The weights AWS serves are the same Claude weights Anthropic serves — not a retrained variant. The CLI and harness are the identical binary on your machine, running the identical loop, prompt assembly, and tool execution. What changes is confined to the API layer: authentication comes from AWS credentials and IAM (enabled via CLAUDE_CODE_USE_BEDROCK) instead of /login or an Anthropic API key, the endpoint is regional AWS infrastructure, and models are addressed by Bedrock model IDs rather than Anthropic model names. Practical deltas that do exist — feature lag, quotas, billing through AWS — are all properties of that one layer, not evidence that the machinery above or below it changed."
@@ -141,8 +141,8 @@
     "difficulty": 3,
     "question": "Mid-session, a model call reports cache_read_input_tokens: 120,000. A colleague concludes those tokens \"weren't sent to the API this time.\" What actually happened?",
     "options": [
-      "The colleague is right — cache reads mean those tokens were skipped on the wire",
-      "The tokens were served from a local cache in ~/.claude instead of being uploaded",
+      "The colleague is right — cache reads count tokens the server restored from its stored copy of the conversation, so they never crossed the wire on this call",
+      "The tokens were served from a local prefix cache the harness keeps under ~/.claude, so only the uncached tail was actually uploaded on that call",
       "They were sent in full; they matched a server-side cached prefix, so they were not recomputed and billed at roughly 0.1× the input rate",
       "Cache reads count output tokens the model reused from one of its previous replies"
     ],
@@ -157,8 +157,8 @@
     "question": "A colleague claims: \"Long sessions cost more, but only linearly — each turn just adds its own tokens to the bill.\" What's wrong with that?",
     "options": [
       "Nothing — pricing is per token, so total cost is linear in what you type",
-      "Cost is actually near-flat, because caching makes re-sent tokens free",
-      "Cost tracks output tokens, and output stays roughly constant per turn",
+      "Cost is actually near-flat after the first few turns, because prompt caching serves re-sent prefix tokens at no charge once the cache is warm",
+      "Cost tracks output tokens, which dominate the bill at five times the input rate, and output stays roughly constant per turn",
       "Every call re-sends the whole conversation so far, so session cost grows roughly quadratically with length"
     ],
     "correctIndex": 3,
@@ -171,9 +171,9 @@
     "difficulty": 3,
     "question": "In your session's token accounting, call 7's total input was 52,410 tokens, and call 8 reports cache_read_input_tokens: 52,408. What does that near-match demonstrate?",
     "options": [
-      "A rounding bug in the token counter, consistently off by two",
+      "A known rounding artifact in the tokenizer's byte-pair accounting, which consistently undercounts multi-call sessions by two tokens",
       "The resend: each call re-ships the previous call's entire payload as its now-cached prefix, then appends new content",
-      "The server truncated two tokens to keep the request inside the context window",
+      "The server silently truncated two trailing tokens from the cached prefix to keep call 8's request inside the context window",
       "Two tokens of the system prompt are randomized on every call by design"
     ],
     "correctIndex": 1,
@@ -187,8 +187,8 @@
     "question": "A colleague says: \"Compaction dropped some early details from our context, but the model saw them earlier in the session, so it can still recall them if it really needs to.\" What's wrong with that?",
     "options": [
       "Each call is a first reading — anything not in the current request simply doesn't exist for the model, and there is nothing server-side to recall from",
-      "Nothing — the server-side KV cache retains earlier turns even after compaction",
-      "It's mostly right, but recall becomes slower and less reliable for dropped content",
+      "Nothing — the server-side KV cache retains the attention state of earlier turns even after compaction, so the model can still attend to them whenever a later question requires it",
+      "It's mostly right — recall of compacted-away content still works, but it becomes slower and less reliable the further back the dropped details sit",
       "It's only wrong on Bedrock; the Anthropic API keeps a session backup for recovery"
     ],
     "correctIndex": 0,
@@ -219,7 +219,7 @@
       "role \"assistant\" — so the model recognizes its own tool output; it matters mainly for billing",
       "role \"user\" — tool output and human speech share one input channel, which is why prompt injection via tool results is a structural risk, not a bug",
       "role \"system\" — the result is appended to the system prompt for stability",
-      "role \"tool\" — a dedicated channel kept isolated from user input"
+      "role \"tool\" — the Messages API gives tool output its own dedicated role, keeping it in a separate channel the model can always distinguish from human input"
     ],
     "correctIndex": 1,
     "explanation": "The tool_result block goes back into the conversation as a user message, keyed to the tool_use id. The model asks for a file; the answer arrives wearing your name. There is no separate \"tool\" role in the Messages API — from inside the message array, file contents, command output, and genuine human instructions all flow through the same input channel. That's the structural reason prompt injection through tool results is a real security category rather than an implementation bug: text a webpage or file happens to contain sits in the same channel as your instructions, and nothing at the protocol level distinguishes them. Appending to the system prompt would also wreck the cached stable prefix — results belong at the volatile end of the array."
@@ -231,8 +231,8 @@
     "difficulty": 3,
     "question": "In the assembled request, the harness orders content roughly as: tool definitions → system prompt → CLAUDE.md and environment info → prior transcript → your newest message. Why is that ordering load-bearing rather than cosmetic?",
     "options": [
-      "The model weighs earlier tokens more heavily, so standing instructions must come first",
-      "The API rejects requests where messages precede the system prompt",
+      "Attention weighs earlier tokens more heavily than later ones, so standing instructions must lead the request or the model will privilege the recent transcript over them",
+      "The Messages API validates block ordering and rejects any request where transcript messages precede the system prompt or the tool definitions",
       "It keeps transcripts readable for humans debugging a session",
       "Prompt caching matches prefixes — stable content first means the bulk of every resend hits cache; volatile content early would invalidate it on every call"
     ],
@@ -248,8 +248,8 @@
     "options": [
       "Only at the API call: endpoint, AWS auth, and model IDs differ; assembly, the loop, and tool execution are harness-local and identical",
       "Tool execution moves into an AWS-managed sandbox instead of your machine",
-      "Bedrock returns response blocks in an AWS-specific format that changes the loop logic",
-      "Bedrock keeps session state server-side, so resends only need to carry new messages"
+      "Bedrock wraps response blocks in an AWS-specific envelope schema, so the harness swaps in a different parsing path and loop logic per provider",
+      "Bedrock keeps conversation state server-side in your AWS account, so after the first call each resend only needs to carry the new messages and tool results"
     ],
     "correctIndex": 0,
     "explanation": "Walk the turn and almost every stage is on your machine: the harness assembles the request, executes tool_use blocks locally, appends tool_result messages, and re-sends the growing array. None of that knows or cares which provider is on the other end. The only stage that changes is the API call itself — AWS credentials and IAM instead of an Anthropic key, a regional AWS endpoint, and Bedrock model IDs — while the payload remains the same Anthropic-shaped message array with the same content blocks (thinking, text, tool_use) coming back. The last distractor is the one to stamp out: no provider keeps conversational state between calls. Statelessness, and therefore the full resend, is a property of the protocol — Bedrock is a different door to the same model."
@@ -261,10 +261,10 @@
     "difficulty": 1,
     "question": "When is Claude Code the better choice over claude.ai chat for a task?",
     "options": [
-      "Whenever you need the smartest model, since chat only serves smaller ones",
+      "Whenever you need the smartest model — claude.ai serves smaller distilled variants, while the CLI is the only surface with access to the full-size weights",
       "When the work lives in your repository — reading and editing files, running tests and commands — because the harness can act locally",
       "Only when you're offline, since Claude Code doesn't need the internet",
-      "When you need the model to automatically remember all your previous conversations"
+      "When you need the model to automatically remember all your previous conversations, since Claude Code stores session memory server-side while chat starts fresh"
     ],
     "correctIndex": 1,
     "explanation": "The deciding factor is agency, not intelligence. The same Claude models are available through both surfaces, so \"smarter model\" is not the differentiator. Claude Code earns its place when the task involves your actual codebase: the harness reads files, edits them, runs tests, and iterates on real command output — things a browser chat can only do through copy-paste. It is not an offline tool: the model runs remotely whether you reach it via the Anthropic API or AWS Bedrock; only tool execution is local. And neither surface gives the model true memory — the API is stateless in both cases; claude.ai's apparent continuity and Claude Code's session history are both harness-side conveniences layered over the same resend mechanics."
@@ -277,9 +277,9 @@
     "question": "What does running `claude -p \"summarize the failing tests\"` do?",
     "options": [
       "Opens plan mode with that prompt preloaded for review",
-      "Starts an interactive session pinned to a saved project profile",
+      "Starts an interactive session pinned to a saved project profile, with the quoted prompt loaded as the session's standing instruction",
       "Runs headless: executes the prompt non-interactively, prints the result to stdout, and exits — the pattern used in CI and scripts",
-      "Queues the prompt to a background session you can resume later"
+      "Queues the prompt to a detached background session that keeps running after you close the terminal, which you can reattach later with --resume"
     ],
     "correctIndex": 2,
     "explanation": "The -p (print) flag is headless mode: no interactive UI, one prompt in, output to stdout, then exit — which makes Claude Code scriptable and pipeable, and is the standard way to run it in CI. Crucially, it is not a dumber mode: the same agent loop runs underneath, including tool use, subject to your permission configuration — the difference is the absence of a human at the terminal, which is why permission setup matters more in CI. Plan mode is a separate interactive mode, and resuming past sessions is what --resume and --continue are for, so those distractors name real features in the wrong place. For a Bedrock shop, headless runs just need AWS credentials and the Bedrock env configuration present in the CI environment — there's no /login step."
@@ -292,8 +292,8 @@
     "question": "You're about to ask for a risky multi-file refactor, so you switch to plan mode first. What does plan mode change about the workflow?",
     "options": [
       "It routes exploration to a cheaper model and edits to a stronger one",
-      "It disables all tools so the model reasons purely from the conversation",
-      "It executes the refactor on a temporary branch, then asks whether to merge",
+      "It disables every tool, including reads, so the model reasons purely from the conversation and any files you paste in yourself",
+      "It executes the refactor on an auto-created shadow branch, then presents the diff and asks whether to merge the changes back into your branch",
       "The model can still research — read files, search the codebase — but must present a plan for your approval before making any edits"
     ],
     "correctIndex": 3,

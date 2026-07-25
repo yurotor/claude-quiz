@@ -54,7 +54,7 @@
       "Because B's injected content is billed at output-token rates, which run several times the input price",
       "Same size is not same cacheability: B's churn moves the cache boundary earlier each call, so tokens that billed at ~0.1× cache-read in A re-bill at full input and 1.25× cache-write rates in B",
       "It doesn't — input cost depends only on how many tokens are sent, so equal-size requests cost the same",
-      "Because each change forces the server to store a second full copy of the conversation, and duplicate storage is billed through"
+      "Because each head change forces the server to persist a second full copy of the cached conversation state, and that duplicated cache storage is metered and billed to the session until the older copy's TTL expires"
     ],
     "correctIndex": 1,
     "explanation": "Prompt caching matches a prefix from the first byte forward, so what you pay depends not just on how many tokens you send but on how many still match the cached head. A static context hits cache on nearly everything — in real sessions cache reads cover over 90% of input tokens at roughly 0.1×. Content that churns near the head moves the divergence point earlier every call, converting a long cheap read into full-price reprocessing plus a 1.25× write to establish the new prefix. That is the second-order cost of dynamic context: it is not just bigger, it is less cacheable, which is why curation that keeps the head still is worth more than its raw token savings. The 'tokens sent = cost' option is the naive pricing model this mechanism breaks; the output-rate and duplicate-storage options attach real billing concepts to the wrong tier and layer. The math is the same via Bedrock or Anthropic."
@@ -68,7 +68,7 @@
     "options": [
       "CLAUDE.md was never part of the compacted history — the harness re-reads it from disk and re-injects it into the stable head at every assembly, while the chat decisions lived only in the messages that got summarized",
       "The compaction prompt is instructed to preserve rule-like statements and discard decision-like ones",
-      "CLAUDE.md content is held in the server-side cache, which survives the eviction of the compacted messages",
+      "CLAUDE.md content is held in the server-side prompt cache under its own breakpoint, so it survives the eviction of the compacted messages and is spliced back into context on each call even though the harness no longer sends it",
       "The model internalized the rules because they repeated across many turns, but the decisions appeared only once"
     ],
     "correctIndex": 0,
@@ -82,7 +82,7 @@
     "question": "A colleague sees that one prompt produced 40 model calls, each re-sending the entire conversation, and concludes the turn cost roughly 40× the price of one full-context call. What's the correction?",
     "options": [
       "Nothing — cost is per-call price times call count, so 40 calls cost 40× one call",
-      "Calls after the first send only the delta since the last call, so they are nearly free",
+      "Calls after the first send only the delta since the last call — the harness references the cached prefix by its breakpoint id, and the server reassembles the full conversation without re-transmission, so marginal calls are nearly free",
       "Each call does re-send everything, but the unchanged prefix bills at ~0.1× as cache reads — which in practice cover on the order of 90% of input tokens — so a marginal call costs a fraction of a cold one",
       "The harness batches the 40 round-trips into a single billed request at the end of the turn"
     ],
@@ -96,7 +96,7 @@
     "difficulty": 4,
     "question": "You want to verify from your own machine exactly where CLAUDE.md lands in the outgoing request — inside the system parameter, or as an early injected message. Why can't reading the session JSONL settle it?",
     "options": [
-      "The transcript stores the request minus the tool schemas, so you can inspect the system parameter but not the tools parameter",
+      "The transcript stores each request minus only the tool schemas — the assembled system parameter is written into the assistant record, so you can settle the system-vs-messages question from disk but learn nothing about the tools param",
       "The transcript is the durable tape, not the outgoing request: it never records the assembled system or tools parameters, so the landing spot is inferred — settling it requires capturing the request on the wire",
       "The harness encrypts request-side fields in the transcript, and only the provider can decode them",
       "You can — each assistant record embeds the full request that produced it, precisely so sessions can be replayed byte-for-byte on resume"
@@ -114,7 +114,7 @@
       "The colleague is right, and the gap is large: an earlier divergence point re-bills a proportionally larger span on every subsequent call",
       "It's backwards — the CLAUDE.md edit costs more, because memory is re-injected on every call while a tool definition is transmitted only once",
       "In a long session they cost nearly the same: both divergence points sit ahead of the giant messages array, which dominates the re-bill; the positional difference is only worth the few thousand system-layer tokens between the two layers",
-      "Neither costs much: cache breakpoints inside the messages array survive edits to the head, so the bulk of the conversation stays cached either way"
+      "Neither costs much: the harness plants cache breakpoints inside the messages array, and matching resumes at the first breakpoint after a divergence, so only the thin span between the head edit and that breakpoint re-bills while the conversation bulk stays cached"
     ],
     "correctIndex": 2,
     "explanation": "Cache invalidation is positional — everything after the divergence point re-bills — so the question is how much sits behind each edit. The tools param does sit before the system layer, but both sit before the messages array, and at 150k tokens the conversation dwarfs the few thousand tokens of system prompt and memory between the two layers. Both edits therefore trigger a nearly identical re-bill: full input on the mismatched span plus 1.25× cache-write to establish the new prefix. Each trap fails on one detail: option one has the right direction but wildly wrong magnitude — 'earlier' buys only the thin system-layer slice; option two cites a real mechanism (memory re-injection) but wrongly concludes re-sent means re-billed — re-injected identical content still cache-hits, and every layer is re-transmitted every call anyway; option four misunderstands breakpoints — a breakpoint cannot rescue content downstream of a prefix mismatch, because matching runs from the first byte. Same economics through Bedrock."
@@ -142,7 +142,7 @@
     "question": "From the model's perspective, how does calling an MCP tool differ from calling a built-in tool like Read?",
     "options": [
       "MCP tools appear as a distinct mcp_use block type, so the model routes them differently",
-      "MCP tools execute on the provider's servers, while built-in tools execute on your machine",
+      "MCP tools execute on the provider's servers, which host the MCP runtime alongside model inference, while built-in tools like Read execute on your machine — so an MCP round-trip never touches the client side of the loop at all",
       "It doesn't differ: every tool is an entry in the tools parameter, and every call is the same tool_use/tool_result round-trip — who defines the schema and who executes are client-side details the model never sees",
       "The model must first open a connection to the MCP server before it can emit calls to its tools"
     ],
@@ -156,7 +156,7 @@
     "difficulty": 3,
     "question": "The model calls a tool provided by an MCP server. What is the actual execution chain?",
     "options": [
-      "The model connects to the MCP server directly, using the transport details declared in the tool's schema",
+      "The model connects to the MCP server directly over the transport declared in the tool's schema — stdio for local servers, HTTP for remote ones — and streams the result straight into its own generation",
       "The API server forwards the call to the MCP server and inlines the result before finishing the model's reply",
       "The harness executes the tool itself, using code the MCP server uploaded to it at startup",
       "The model emits an ordinary tool_use; the harness relays it to the MCP server process, which executes and returns the result; the harness ships it back as a tool_result in the next request"
@@ -172,7 +172,7 @@
     "question": "Within a single user turn, the harness loops: send request, get reply, run tools, send again. What normally ends that loop and returns control to you?",
     "options": [
       "A model reply containing no tool_use blocks — the model stops asking, the harness has nothing to execute, and the turn ends",
-      "The harness's iteration limit — the loop runs until a maxTurns-style cap is reached",
+      "The harness's iteration limit — the loop always runs until a maxTurns-style cap is reached, then returns whatever the model produced on the final call",
       "The user approving the final response — each loop exit requires a human confirmation",
       "The API signals completion server-side once it detects the task is finished"
     ],
@@ -188,7 +188,7 @@
     "options": [
       "In the API, which screens tool_result content for instruction-like text before the model reads it",
       "In the harness: permission gates, sandboxing, and limiting what untrusted output can trigger — consequences are stopped where actions execute",
-      "In model training: newer models enforce a strict instruction hierarchy that closes the category outright",
+      "In model training: newer models enforce a strict instruction hierarchy ranking system over user over tool-result content, which closes the injection category outright",
       "In MCP servers, which are required by the protocol to sanitize content before returning it"
     ],
     "correctIndex": 1,
@@ -202,7 +202,7 @@
     "question": "A colleague says: \"Read and Bash are built into the Claude API — the harness just switches them on per request.\" What's the correction?",
     "options": [
       "Right — the API ships built-in coding tools, and the harness selects which toolset each request may use",
-      "Right in effect — Claude was trained on these exact tools, so the schemas are optional and sent only as a formatting hint",
+      "Right in effect — Claude was trained on these exact schemas, so the definitions are baked into the weights and the harness sends them only as a formatting hint that could be omitted without changing behavior",
       "Wrong — the tool schemas live in CLAUDE.md, which the harness injects at the system layer of every request",
       "Wrong — the harness defines those schemas and sends them in the tools parameter on every call; the API keeps no tool registry, and the model knows only the tools present in the current request"
     ],
@@ -217,7 +217,7 @@
     "question": "A deferred MCP tool's name has been mentioned in context, but its schema has not been loaded into the request. A colleague claims the model can just call it by name. What actually governs whether it's callable?",
     "options": [
       "They're right — the API resolves tool names against the full registry the harness uploaded at session start",
-      "They're right — emitting tool_use with the name makes the harness fetch the schema on demand and execute in the same round-trip",
+      "They're right — emitting tool_use with the name is enough: the harness intercepts the unknown name, fetches the schema from the MCP server on demand, validates the input retroactively, and executes in the same round-trip with no extra model call",
       "Tools exist per-request: only entries in this call's tools parameter are callable, so the model must first trigger the schema load, which places the definition into subsequent requests — and moves the cache boundary once when it does",
       "They're wrong, but for a different reason — deferred tools are callable only from subagents, which load their own tool sets"
     ],
@@ -233,7 +233,7 @@
     "options": [
       "It isn't possible — when the terminal closes, the conversation is gone for good",
       "The model remembers you and your project between sessions",
-      "Your conversations are synced to a cloud account and downloaded when you return",
+      "Your conversations are synced to a cloud account tied to your login, and the CLI downloads yesterday's chat again when you return to the project",
       "The harness saved the whole session to a transcript file on your own disk, and rebuilds the conversation from it"
     ],
     "correctIndex": 3,
@@ -246,7 +246,7 @@
     "difficulty": 2,
     "question": "You want settings that apply only to you, in one specific project, without ever being pushed to your teammates. Which file is designed for that?",
     "options": [
-      "The project's .claude/settings.json — project settings are per-developer by design",
+      "The project's .claude/settings.json — project settings apply per-checkout, so each developer's clone keeps its own values without affecting teammates",
       "Your global ~/.claude/settings.json — personal settings always live at user level",
       ".claude/settings.local.json in the project — the personal project layer, meant to be gitignored, and it outranks the shared project file",
       "A private CLAUDE.md section — memory files are the per-user configuration surface"
@@ -278,7 +278,7 @@
     "options": [
       "In ~/.claude.json — a file beside the ~/.claude directory, stored in plaintext; your own Bedrock setup keeps nothing there because auth comes from AWS credentials",
       "In ~/.claude/settings.json, under a dedicated auth key",
-      "In the operating system keychain, encrypted at rest",
+      "In the operating system keychain — the CLI hands tokens to macOS Keychain or the Linux secret service, so they are encrypted at rest and never written to a plaintext file",
       "In .claude/settings.local.json inside each project they've logged in from"
     ],
     "correctIndex": 0,
@@ -293,7 +293,7 @@
     "options": [
       "An accounting artifact — those tokens were billed on the previous call and shouldn't be counted again",
       "The resend made visible: each call re-transmits the entire previous request, which now matches the cached prefix — this correspondence is the statelessness signature you can read off your own disk",
-      "Evidence the server stores the conversation between calls, so the harness only needs to send the new part",
+      "Evidence the server keeps the conversation between calls: cache_read counts the stored tokens the harness did not need to re-send, which is why only the new tail crosses the wire on each round-trip of the loop",
       "Cache pre-warming: the server speculatively re-runs the previous request so the next one starts hot"
     ],
     "correctIndex": 1,
@@ -307,7 +307,7 @@
     "question": "Analyzing a session's JSONL, you find records flagged isSidechain: true interleaved with the rest. What are they, and what's the trap if you ignore the flag?",
     "options": [
       "Subagent conversations: they're stored inline in the parent session's file but never entered the parent's assembled context — count them and you inflate what the main model actually saw",
-      "Parallel branches created by the rewind feature — they re-enter context whenever you rewind past their fork point",
+      "Parallel branches created by the rewind feature: each rewind forks the tape, and the abandoned branch's records stay inline, flagged, so they re-enter context whenever you rewind past their fork point again",
       "Abandoned streaming drafts — the same message written multiple times, which you deduplicate by message id",
       "MCP server logs mirrored into the transcript for debugging, excluded from token accounting"
     ],
@@ -324,7 +324,7 @@
       "They're right — the harness sweeps every store under ~/.claude/ against that setting at startup",
       "They're wrong about scope — the cleanup applies only to files above a size threshold, so small old files persist",
       "The setting nominally trims old chat transcripts, but retention is uneven and undocumented across the other stores — adjacent logs and state can persist far longer, so if you need to know what's still on disk, look; purging is a separate, explicit act",
-      "They're right for Anthropic-direct sessions, but Bedrock sessions are retained indefinitely for AWS-side compliance"
+      "They're right for Anthropic-direct sessions, but Bedrock sessions are exempt from the sweep — with CLAUDE_CODE_USE_BEDROCK set, the harness retains every transcript indefinitely, because AWS-side compliance expects an auditable local record of each request sent"
     ],
     "correctIndex": 2,
     "explanation": "cleanupPeriodDays (default 30) governs the trimming of old chat transcripts — but ~/.claude/ is a sprawl of stores beyond transcripts: plugin logs, file-history snapshots, shell snapshots, todos, and more, and retention across them is uneven and undocumented. In practice you can find files months older than the window — a plugin telemetry log, say — because they were never in the setting's scope. The durable lesson: retention is per-store and unverifiable from the setting alone, so audit the disk rather than trust the number, and treat purging (deleting under ~/.claude/projects/, or the explicit purge command) as an action you take, not something that happens. The size-threshold option invents a mechanism. The Bedrock option is a category error worth naming: all of this state is harness-side, on your machine — the provider door your requests go through has nothing to do with what your own disk retains."
@@ -339,7 +339,7 @@
       "Commit a .claude/settings.json to the repo with the Bedrock variables (CLAUDE_CODE_USE_BEDROCK, region, model) in its env block, so every session resolves them through the normal precedence chain",
       "Add the variables to the project CLAUDE.md so the model reads and applies them",
       "Have each developer export the variables in their own shell profile",
-      "Commit a .claude/settings.local.json with the variables so each clone picks them up"
+      "Commit a .claude/settings.local.json with the variables — the local layer outranks the shared project file in precedence, so values committed there win on every clone regardless of personal overrides"
     ],
     "correctIndex": 0,
     "explanation": "Bedrock configuration is env-var heavy — the provider switch itself is CLAUDE_CODE_USE_BEDROCK, with region and model identifiers riding alongside — and settings files can pin env vars via their env block. Committing them in the shared .claude/settings.json makes the wiring part of the repo: every clone gets identical provider config, resolved through the same precedence chain as everything else. Shell profiles genuinely work, but they're per-machine hand-setup — exactly the drift you're trying to eliminate. The CLAUDE.md option fails on the landing axis: provider selection is harness-shaping — it steers which door the request leaves through, and the model neither sees nor can act on it; memory-file text about endpoints configures nothing. And settings.local.json is the personal, conventionally gitignored layer — committing it inverts its purpose; the shared project file is the team surface. Auth itself still comes from each developer's AWS credential chain — the committed file carries wiring, not secrets."
@@ -368,7 +368,7 @@
     "options": [
       "It doesn't until you restart — memory files are read once at session start",
       "On the next model call: assembly re-reads the file and injects the new content into the stable head — at the price of a moved cache boundary re-billing the prefix behind the system layer once",
-      "Immediately — the harness watches the file and pushes the diff to the server, which patches its cached copy",
+      "Immediately — the harness watches memory files for changes and pushes the diff to the server mid-turn, which patches the cached copy of the system layer in place without waiting for the next assembly",
       "Only after /compact — compaction is what rebuilds the context from source files"
     ],
     "correctIndex": 1,
@@ -384,7 +384,7 @@
       "A PreToolUse hook that blocks a command — the block changes what the model observes next, making the hook request-landing",
       "A hook whose output the harness injects into the prompt (a user-prompt-submit hook adding text to your message) — harness-executed, but its output becomes request content: it costs tokens, can move the cache boundary, and is model-visible",
       "A Stop hook that writes a log file — logs are durable state, and durable state shapes the reconstructed request",
-      "A hook that invokes claude -p inside itself — its subprocess makes API calls, so the hook's effects land in a request after all"
+      "A hook that invokes claude -p inside itself — the subprocess inherits the parent's session id and appends its exchanges to the same transcript tape, so on the next assembly those records enter the parent's message array and land in a request after all"
     ],
     "correctIndex": 1,
     "explanation": "The clean statement 'hooks are harness-landing' holds until a hook's output is injected into the prompt: then a harness mechanism is manufacturing request content — text the model reads, tokens billed every affected call, and churn that can move the cache boundary if it varies turn to turn. Like enabledPlugins, it straddles the binary: the configuration never ships, but its product does. The traps each misapply a real fact. The blocking hook's visible effect is an ordinary tool_result reporting denial — the protocol's normal output; the hook contributed no content, and by that logic every permission rule would be request-landing. The logging hook misuses the data-model tiers: assembly reconstructs from the session tape and config surfaces, not from arbitrary files a hook wrote. The claude -p hook does generate API calls, but they are separate requests in a separate loop; nothing lands in this session's payload. The refined test stands: does the mechanism change the bytes of this session's requests?"

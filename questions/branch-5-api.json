@@ -38,7 +38,7 @@
     "options": [
       "With an API key; every token is billed to a pay-as-you-go account",
       "With an IAM role; usage lands on a corporate cloud bill",
-      "With OAuth, but tokens are still metered and invoiced per million tokens",
+      "With an OAuth session, but every input and output token is still metered and invoiced per million tokens through the Anthropic console",
       "With an OAuth session tied to their subscription; usage draws on the plan's included allowance rather than per-token invoices"
     ],
     "correctIndex": 3,
@@ -51,7 +51,7 @@
     "difficulty": 3,
     "question": "At the wire level, how does a Claude Code request prove its identity to Bedrock, versus to the Anthropic API?",
     "options": [
-      "Both send a bearer token issued by Anthropic; Bedrock merely validates it against AWS",
+      "Both paths send a bearer token issued by Anthropic in the Authorization header; Bedrock merely validates that token against your AWS account before serving the call",
       "Bedrock requests are SigV4-signed with AWS credentials; Anthropic-direct requests carry an `x-api-key` header or an OAuth bearer token",
       "Bedrock embeds your Anthropic API key inside the AWS request envelope",
       "Bedrock authenticates via client TLS certificates; Anthropic uses API keys"
@@ -96,7 +96,7 @@
     "difficulty": 3,
     "question": "Your Bedrock model ID starts with `us.` — a cross-region inference profile. What does that prefix actually buy you?",
     "options": [
-      "It pins every request to a single US region for data-residency compliance",
+      "It pins every request to the single US region named in your AWS_REGION variable, guaranteeing data residency for compliance-sensitive workloads",
       "It selects a cheaper US-only pricing tier for the same model",
       "It enables the model to be fine-tuned on your account's data within US regions",
       "It lets Bedrock route your requests across several regions in that geography, drawing on pooled capacity instead of one region's quota"
@@ -114,7 +114,7 @@
       "Nothing — AWS fine-tunes each Claude model for enterprise workloads before hosting it",
       "It's wrong only about the direction: Anthropic runs the modified copy, Bedrock the original",
       "The weights are the same model; real differences come from provider-level factors — which model versions and API features are available, defaults, and sampling nondeterminism — not altered weights",
-      "It's wrong because Bedrock doesn't host the model at all; it proxies every call to Anthropic's servers"
+      "It's wrong because Bedrock doesn't host the weights at all: InvokeModel is a thin proxy that forwards each request over a private link to Anthropic's own servers, which is why responses match byte-for-byte across providers"
     ],
     "correctIndex": 2,
     "explanation": "Bedrock is a different door to the same model: Anthropic supplies the weights, AWS supplies the serving front-end, auth, and billing. AWS does not retrain or fine-tune Claude. So where do real observed differences come from? Provider-level deltas: Bedrock may offer an older model lineup or lag on API features, defaults can differ, and — most often overlooked — sampling is nondeterministic, so two runs of the same prompt differ even on the same provider, which people misattribute to the platform. Option D overcorrects: Bedrock genuinely hosts and serves the model inside AWS infrastructure (that's its enterprise selling point — traffic stays in your cloud perimeter), it is not a proxy to Anthropic. The durable rule: harness behavior and model behavior are provider-invariant; availability, features, quotas, and billing are where the providers actually diverge."
@@ -126,7 +126,7 @@
     "difficulty": 2,
     "question": "When a Claude Code request gets a large prompt-cache hit, what exactly is being saved?",
     "options": [
-      "Bandwidth — the cached tokens are not transmitted to the server again",
+      "Bandwidth and latency — the matched prefix is never retransmitted; the harness ships only the delta since the last call, which is exactly why time-to-first-token drops",
       "Prefill compute — the server skips recomputing attention state for the matched prefix; the tokens still cross the wire, but you pay ~0.1× and get lower latency",
       "Output cost — the model's reply is retrieved from cache instead of regenerated",
       "Context space — cached tokens no longer count against the context window"
@@ -156,10 +156,10 @@
     "difficulty": 3,
     "question": "Mid-session you enable a new MCP server. On the very next model call, cache reads collapse to near zero and cache writes spike to the size of the whole conversation. Why?",
     "options": [
-      "The MCP server's tools ran and generated a large volume of new output tokens",
+      "The MCP server's tools ran immediately on connection, and their results arrived as a conversation-sized burst of new output tokens on that first call",
       "MCP servers disable prompt caching while they are connected",
       "Tool definitions sit near the front of the request; adding one changed the stable head, so the prefix no longer matches and everything after the change must re-prefill and re-write",
-      "The cache entry was evicted because enabling a server takes longer than the TTL"
+      "The cache entry idled past its 5-minute TTL while the MCP server was starting up, so the entry was evicted and the next call had to re-prefill and re-write the whole conversation from scratch"
     ],
     "correctIndex": 2,
     "explanation": "Prompt caching is exact-prefix matching from the very start of the request, in the canonical `tools → system → messages` order. Tool definitions live at the head. Enabling an MCP server inserts new tool schemas into that head, so the first bytes of the request differ from what was cached — the prefix match fails at the earliest change point, and every token after it (potentially hundreds of thousands) must be re-prefilled at full price and re-written at the write premium. That is the real cost of context churn: not the new tool tokens themselves, but the huge cached prefix they dump. Option A confuses input-side cache accounting with output tokens; option B invents a rule (MCP tools cache fine once stable); option D describes TTL expiry, a different miss cause with the same signature. Practical rule, either provider: keep the head still — stability is worth more than size."
@@ -172,7 +172,7 @@
     "question": "Why would an agent harness deliberately pay the 2× write price for the 1-hour cache TTL instead of the cheaper 1.25× five-minute default?",
     "options": [
       "The 1-hour tier gives faster cache reads on every subsequent call",
-      "The 1-hour tier is required whenever the prompt exceeds a size threshold",
+      "The 1-hour tier is mandatory once the cached prefix exceeds the per-model size threshold — roughly 1,024–4,096 tokens depending on model — so agent-sized prompts have no real choice",
       "The 5-minute tier only caches the system prompt, not the message history",
       "Coding sessions have think-time gaps longer than five minutes; a 5-minute entry would expire during a pause and force a catastrophic full re-prefill of the whole prefix"
     ],
@@ -219,7 +219,7 @@
       "Nothing — caching is a property of the weights, so it must be identical",
       "Bedrock has no prompt caching at all; it's an Anthropic-API exclusive",
       "Prompt caching lives in the provider's serving stack, not the model; each provider decides which caching features, TTL options, and models it supports, and Bedrock has typically trailed the Anthropic API on newer options",
-      "Caching on Bedrock is handled client-side by the harness, so provider support is irrelevant"
+      "Caching on Bedrock is handled client-side: the harness stores the computed prefix state locally under ~/.claude and replays it on the next call, so what AWS's serving stack supports — TTLs, breakpoints, betas — is irrelevant to what you can use"
     ],
     "correctIndex": 2,
     "explanation": "The KV-cache mechanism is universal physics of transformer serving, but the product features around it — `cache_control` breakpoints, which TTLs you may buy, which models support it, whether a capability is GA or behind a beta flag — are implemented in each provider's serving stack and shipped on each provider's schedule. Bedrock does support prompt caching for Claude (so option B overshoots), but the feature set has historically lagged the Anthropic API: new options like the extended 1-hour TTL appeared on Anthropic first, and Bedrock support arrives later and per-model. Option D is exactly backwards — the whole point is that the cache is server-side state; the harness can only request caching, never perform it. For a Bedrock-first user the durable habit is: assume mechanism parity, verify feature parity. Same weights guarantee the same model behavior, never the same API surface."
@@ -249,7 +249,7 @@
       "Anthropic uses org-level usage tiers whose request/token-per-minute limits grow with your account's history and spend; Bedrock uses per-account, per-region, per-model service quotas, adjustable via AWS quota-increase requests",
       "Both use the same Anthropic-defined tiers, since the model is the same",
       "Anthropic has hard fixed limits for everyone; Bedrock is effectively unlimited on demand",
-      "Bedrock limits are set per IAM user, while Anthropic limits are set per API key"
+      "Bedrock quotas bind each IAM principal separately, so spreading traffic across roles multiplies effective throughput, while Anthropic limits attach to each individual API key rather than the organization, so rotating keys resets your throughput"
     ],
     "correctIndex": 0,
     "explanation": "The two governance models mirror each provider's ecosystem. Anthropic organizes accounts into usage tiers: as your organization spends and builds history, it advances tiers and its RPM/token-per-minute ceilings rise, with custom limits at the top. AWS instead treats Bedrock like any other service: Service Quotas define your on-demand ceilings per model, per region, per account, and you raise them by filing quota-increase requests (or sidestep the shared pool entirely with provisioned throughput or cross-region inference profiles). Option B fails because limits are provider infrastructure, not model property — the same weights sit behind completely different traffic cops. Option C is wrong in both directions: Anthropic tiers grow, and Bedrock on-demand is very much finite, as any parallel-agent workload discovers. Option D misplaces the granularity — Bedrock quotas bind the account+region, not individual IAM users, and Anthropic limits bind the organization, not each key."
@@ -264,7 +264,7 @@
       "A free burst allowance AWS grants automatically when on-demand traffic spikes",
       "Dedicated model capacity you purchase in units for guaranteed throughput — chosen when shared on-demand quotas throttle a steady, high-volume workload",
       "A client-side setting that raises Claude Code's parallel request count",
-      "A discount program that lowers per-token prices once monthly spend passes a threshold"
+      "A committed-spend discount program that lowers Bedrock's per-token prices once monthly usage passes a threshold, akin to advancing an Anthropic usage tier"
     ],
     "correctIndex": 1,
     "explanation": "Bedrock offers two throughput models. On-demand is the shared pool: pay per token, but compete with everyone else in the region under your account's quotas, and absorb ThrottlingExceptions when you exceed them. Provisioned throughput is the alternative: you commit to purchasing model units — dedicated serving capacity with a guaranteed token throughput, billed by the hour or via term commitment — so your traffic no longer contends in the shared pool. Teams reach for it when a workload is sustained and throttling-sensitive: fleets of agents, CI pipelines running headless Claude Code, batch processing. The trade is cost shape: you pay for reserved capacity whether or not you saturate it, versus per-token billing that throttles unpredictably. Nothing like this exists on the Anthropic API side, where the lever is tier advancement or negotiated limits. Options A, C, and D describe mechanisms Bedrock doesn't have — capacity there is either shared-and-quota'd or bought outright."
@@ -276,7 +276,7 @@
     "difficulty": 4,
     "question": "A colleague says: \"Fanning out five parallel subagents is quota-safe on Bedrock — they run under the parent session, so it counts as one request stream.\" What's wrong with that?",
     "options": [
-      "Nothing — Bedrock meters by session, so subagents ride under the parent's allocation",
+      "Nothing — Bedrock meters throughput per streaming connection, and subagents multiplex their calls over the parent's connection, so all five draw from a single request-stream allocation rather than five separate ones against the regional quota",
       "It's wrong only because Bedrock forbids concurrent connections from one IAM principal",
       "Each subagent is its own stateless loop making its own API calls, each resending its own full context — five agents multiply token throughput against the same per-region, per-model on-demand quota, inviting throttling",
       "Subagents don't call the API at all; they reuse the parent's cached responses"
@@ -307,7 +307,7 @@
     "question": "Where do you actually see what your Bedrock-backed Claude Code usage costs?",
     "options": [
       "In your AWS bill — Cost Explorer and billing reports under your AWS account, like any other AWS service",
-      "In the Anthropic console, under your organization's usage page",
+      "In the Anthropic console's usage page — Bedrock reports token counts back to the Anthropic organization linked to your AWS account",
       "Nowhere itemized — it's bundled into a flat Claude subscription fee",
       "In a monthly statement emailed by Anthropic for Bedrock customers"
     ],
@@ -323,7 +323,7 @@
     "options": [
       "Because the provider raises per-token prices as a conversation gets longer",
       "Because the model thinks harder about later turns, generating more output tokens",
-      "Because tool results are billed at a premium compared to typed messages",
+      "Because tool results are billed at a premium input rate — the same 1.25× multiplier as cache writes — and later turns carry ever more tool output",
       "Because the API is stateless: every call resends the entire conversation, so turn n pays input costs for turns 1 through n all over again"
     ],
     "correctIndex": 3,
@@ -367,7 +367,7 @@
     "question": "A colleague argues: \"With cache reads at 0.1×, long sessions are basically free, so compaction and /clear are pointless cost-wise on Bedrock.\" What's wrong with that?",
     "options": [
       "0.1× of a quadratically growing resend still grows; the window is finite so compaction is eventually forced anyway; and one cache miss — TTL expiry, model switch, head churn — re-bills the whole prefix at write prices",
-      "Nothing — cache reads genuinely reduce marginal cost to zero for the cached portion",
+      "Nothing — with reads at 0.1× and refresh-on-hit keeping entries alive at no extra charge, the cached portion's marginal cost genuinely rounds to zero, leaving only the small uncached remainder and the output tokens to matter on the bill",
       "It's wrong only because Bedrock bills cache reads at full input price",
       "It's wrong because cache reads still consume output-token budget"
     ],
@@ -396,7 +396,7 @@
     "difficulty": 3,
     "question": "An API response comes back with stop_reason \"tool_use\". What does the Claude Code harness do, and how does that differ from \"end_turn\"?",
     "options": [
-      "On tool_use it waits for the server to run the tool and push the result back",
+      "On tool_use it holds the stream open while the server executes the tool remotely, then receives the result pushed down the same connection before decoding resumes",
       "Both end the turn; tool_use just annotates that tools were used along the way",
       "On tool_use it asks the user to run the command manually and paste the output",
       "On tool_use it executes the requested tool locally, appends the result, and immediately calls the API again; only end_turn returns control to the human"
@@ -411,7 +411,7 @@
     "difficulty": 4,
     "question": "How does the raw request Claude Code sends to Bedrock's InvokeModel differ from the equivalent request to Anthropic's Messages API?",
     "options": [
-      "Bedrock requires rewriting the conversation into AWS's own message format, discarding Anthropic's content blocks",
+      "Bedrock requires rewriting the conversation into AWS's normalized Converse schema — camelCase fields, toolSpec definitions, cachePoint markers — discarding Anthropic's native content blocks before any Claude model on Bedrock will accept the request",
       "There is no difference at all — even the URL and headers are identical",
       "The body is the same Anthropic-shaped payload (messages, content blocks, max_tokens), but the model is named in the request URI rather than a body field, and the body carries an anthropic_version marker; auth and transport are AWS's",
       "Bedrock only accepts a single flattened prompt string, so the harness concatenates the messages array"

@@ -38,7 +38,7 @@
     "options": [
       "Headless runs have no human to answer permission prompts, so unmatched actions can't be interactively approved — configure the allowlist or a non-prompting permission mode up front",
       "The -p flag disables all tools by default, so any tool call fails until you re-enable them with a flag",
-      "CI machines lack the local cache where your past interactive approvals are stored, so you must run one interactive session first",
+      "CI machines lack the per-user approval cache under ~/.claude where your interactive 'always allow' answers are stored, so you must run one interactive session on the runner first to warm it before headless runs will succeed",
       "Bedrock-backed sessions require IAM approval for each new command pattern, so the pattern must be added to the role policy"
     ],
     "correctIndex": 0,
@@ -69,7 +69,7 @@
       "Close — sandboxing is the deny list specifically, while 'permissions' properly refers to the allow and ask lists",
       "They're different layers answering different questions: rules are harness policy on whether a tool call may run at all; the sandbox is OS-level containment on what a running command can touch — and they compose",
       "Backwards — once sandboxing is enabled it replaces the rules entirely, because the operating system takes over policy from the harness",
-      "They're the same mechanism, but 'sandboxing' is what the permission system is called when Claude Code runs against Bedrock"
+      "They're the same gate under two names: 'permissions' is the label for the interactive prompting surface, while 'sandboxing' is what the identical rule engine is called when it runs non-interactively — in CI pipelines or against Bedrock"
     ],
     "correctIndex": 1,
     "explanation": "Two layers, two questions. Permission rules sit at the harness's gate and decide 'may this tool call execute at all?' — policy, evaluated before anything runs. Sandboxing assumes the call runs and uses operating-system isolation primitives to bound what it can do: restricting filesystem writes outside the workspace and limiting network access. Because the layers are independent, they compose into defense in depth — a command the rules permit can still be unable to write outside the project, because the OS stops it underneath. That composition has a practical payoff: when the harness knows a command is confined, it can afford to prompt less, since even a bad command has a bounded blast radius — sandboxing reduces prompt fatigue rather than adding friction. Neither layer replaces the other, and neither is provider-specific: both run locally, identical on Bedrock and the Anthropic API."
@@ -96,7 +96,7 @@
     "difficulty": 3,
     "question": "A colleague answers a permission prompt with 'always allow' and claims: 'That just set an in-memory flag in the harness — nothing on disk changed.' What actually happened, and where?",
     "options": [
-      "A rule was appended to the project's shared .claude/settings.json, so the whole team inherits the approval on their next git pull",
+      "A rule was appended to the project's shared .claude/settings.json — the tier permission prompts always write to — so the whole team inherits the approval on their next git pull, which is why teams review that file in PRs",
       "The colleague is right — 'always' persists only for the running session and is forgotten when it ends",
       "A durable allow rule was appended to a settings file — typically the project's .claude/settings.local.json, which stays out of version control — making the approval personal and permanent",
       "A rule was appended to ~/.claude/settings.json, making the approval global across every project on the machine"
@@ -129,10 +129,10 @@
       "Your own prompts, since user messages are kept at higher fidelity than other content",
       "Tool outputs — file reads, search results, command output — which the loop appends in full and then resends every turn",
       "The system prompt, which the harness grows a little on every turn to track session state",
-      "The model's replies, which are the only content counted against the window"
+      "The model's replies, and extended thinking especially — output tokens count double against the window, so verbose reasoning fills it fastest"
     ],
     "correctIndex": 1,
-    "explanation": "Context grows with everything the loop appends — prompts, replies, tool inputs — but the big one is tool outputs. A single file read can add thousands of tokens; a broad search or verbose test run, more; and because the stateless loop resends the whole conversation each turn, every one of those tokens is carried forward on every subsequent call. That's why exploration-heavy sessions hit auto-compaction far sooner than chat-heavy ones. The distractors miss the accounting: user prompts are usually tiny by comparison and nothing is stored at 'higher fidelity'; the system prompt is a stable, re-injected layer, not an accumulating one; and everything in the assembled request counts against the window, not just replies. The practical lever follows directly: push heavy exploration into subagents, whose tool outputs stay in a separate loop and return only a summary — keeping the parent's window lean and the fold further away."
+    "explanation": "Context grows with everything the loop appends — prompts, replies, tool inputs — but the big one is tool outputs. A single file read can add thousands of tokens; a broad search or verbose test run, more; and because the stateless loop resends the whole conversation each turn, every one of those tokens is carried forward on every subsequent call. That's why exploration-heavy sessions hit auto-compaction far sooner than chat-heavy ones. The distractors miss the accounting: user prompts are usually tiny by comparison and nothing is stored at 'higher fidelity'; the system prompt is a stable, re-injected layer, not an accumulating one; and everything in the assembled request counts against the window, not just replies. The practical lever follows directly: push heavy exploration into subagents, whose tool outputs stay in a separate loop and return only a summary — keeping the parent's window lean and the fold further away. And no token counts double against the window — thinking or not, each token occupies exactly one slot."
   },
   {
     "id": "3.6-L2-06",
@@ -159,7 +159,7 @@
       "There is none — that string only ever appears inside genuine boundary records, so any hit is proof",
       "The flaw is the tool: transcript files are stored in a binary encoding, so grep cannot see real records at all",
       "Grep matches substrings, not records: a conversation that merely discussed compaction contains the word in message text — you must parse structurally and check for a system record with subtype compact_boundary",
-      "The flaw is the location: boundary markers are written to a separate index file, never into the transcript itself"
+      "The flaw is the location: boundary markers live in a separate per-session index file the harness keeps alongside the transcript, so any hit inside the .jsonl itself can only be quoted message text rather than a real boundary record"
     ],
     "correctIndex": 2,
     "explanation": "A real fold leaves a structural artifact: a record with type \"system\" and subtype \"compact_boundary\" appended to the transcript. But grep finds substrings anywhere — and a session where you talked about compaction (reading docs, writing a quiz about it) contains the literal string inside ordinary message text, with no boundary record behind it. The two are indistinguishable to grep and trivially distinguishable to a parser that checks the record's type and subtype fields. So hits alone prove only mention, not event. The other options fail on facts: transcripts are plain JSONL, perfectly greppable — that's exactly why the false positive is easy to hit; and the boundary marker does live in the transcript stream, not a side index. The transferable habit: when a grep looks like evidence about structured logs, confirm it's a record, not a mention, before building a conclusion on it."
@@ -171,7 +171,7 @@
     "difficulty": 3,
     "question": "You keep a running task list inside the conversation and want it to survive every auto-compaction. Which lever is actually documented to influence what the fold preserves?",
     "options": [
-      "A PreCompact hook that intercepts and edits the summarizer's output before it is appended",
+      "A PreCompact hook that receives the summarizer's draft on stdin and can rewrite it before the fold is appended — its trigger field says whether the fold was manual or auto",
       "Pinning the task-list messages with a /pin command, which the compactor must carry verbatim",
       "Setting a compaction ratio in settings.json so that less of the history is dropped per fold",
       "Adding a 'when compacting, always preserve the current task list' note to CLAUDE.md — the compactor reads your memory files and follows that guidance"
@@ -186,7 +186,7 @@
     "difficulty": 3,
     "question": "A session auto-compacted yesterday; today you --resume it. What conversation state does the model see on your first new turn?",
     "options": [
-      "The full pre-fold history — resume replays the append-only transcript, and every original message is still recorded in it",
+      "The full pre-fold history — resume replays the append-only transcript record by record, and since compaction never erases anything from disk, every original message is still there to be rebuilt into context",
       "The post-fold working set — the summary plus the recent tail — because the fold's summary and boundary marker are durable records, and reconstruction honors them instead of replaying the folded turns",
       "Only the summary — resume drops the recent tail as well, to be conservative about the window",
       "A freshly re-summarized version — resume always re-runs compaction over the whole transcript before continuing"
@@ -203,7 +203,7 @@
     "options": [
       "Mid-task, the details you still need are exactly the 'older history' at risk of being folded, and you forgo the control a manual compact gives you — timing and focus instructions; at a boundary, what's summarized away is finished work",
       "Auto-compact uses a smaller, cheaper summarizer model than /compact does, so its summaries are systematically lower quality",
-      "Auto-compact skips the PreCompact hook entirely, so a mid-task fold can never be archived before it happens",
+      "Auto-compact fires from inside the loop between tool calls, where hooks cannot run — so it skips PreCompact entirely and a mid-task fold can never be archived first, whereas manual /compact runs from the prompt line where hooks are live and always fire",
       "Mid-task folds risk corrupting the transcript's record ordering on disk, which manual compaction is designed to avoid"
     ],
     "correctIndex": 0,
@@ -219,7 +219,7 @@
       "Nothing — on the 1-hour cache TTL, prefix rewrites are free, so frequent folds cost only the summary's output tokens",
       "Compaction's price is per-session, not per-fold: after the first expensive fold, later folds reuse the same summary at no extra model cost",
       "Each fold pays a full-price read of the whole conversation plus a fresh cache write of the rewritten prefix, and abandons cheap ~0.1x cache reads — frequent small folds repeat those costs for little size relief, and every pass loses detail",
-      "It's correct against the Anthropic API but backwards on Bedrock, where cache writes are the discounted operation and reads carry the premium"
+      "It's correct against the Anthropic API but backwards on Bedrock, where cache writes are the discounted operation and reads carry the premium — AWS prices for storage rather than retrieval, so frequent small folds actually get cheaper there, not costlier"
     ],
     "correctIndex": 2,
     "explanation": "Compaction has a real per-fold price, and it's the same price whether the fold was needed or not: the summarization pass must read essentially the entire conversation at full input rates (little of it is cacheable), and the rewritten prefix abandons the existing cache, so the next request pays a cache write at a premium (1.25x base input at the 5-minute TTL) instead of ~0.1x reads. That trade is favorable when the folded bulk is large and many turns remain; folding every ten turns pays the fixed costs repeatedly for marginal size relief — and stacks lossiness, since each summary is a summary of a summary. The traps: 1-hour-TTL writes are more expensive than 5-minute writes (2x base), not free; there's no per-session amortization — every fold is its own model call; and Bedrock doesn't invert cache economics — writes carry the premium and reads the discount on both providers."
@@ -231,7 +231,7 @@
     "difficulty": 4,
     "question": "The compaction pass must re-read the entire conversation to write its summary — yet your session's long prefix is already sitting in the prompt cache. Why is that pass billed as an expensive full read rather than cheap cache reads?",
     "options": [
-      "Because the fold has already rewritten the prefix by the time the summarizer reads it, so nothing left in the cache matches what it is given",
+      "Because the harness applies the fold first and summarizes second: by the time the summarizer reads the conversation, the prefix has already been rewritten around the compact_boundary marker, so nothing left in the cache matches the bytes it is handed",
       "Because prompt caches are scoped to a single conversation thread, and the compactor runs as a separate thread under its own cache namespace",
       "Because the harness deliberately bypasses the cache for summarization, to guarantee the summary isn't produced from stale cached content",
       "Because caching matches byte-identical prefixes from position zero, and the summarization request is assembled differently from the session's ordinary requests — little of it lines up with the cached prefix, so the read bills at full input price"
@@ -249,7 +249,7 @@
       "The session restarts with fresh context, because a conversation is bound to the model that started it",
       "The very next API call goes to the new model carrying the entire existing conversation — model choice is just a field the harness sets per request, and the resend delivers full history to whichever model receives it",
       "The switch is queued until the next compaction, when the summary can be handed to the new model cleanly",
-      "New turns use the new model, but follow-up tool results still route to the original model for consistency"
+      "New turns go to the new model, but tool_results answering calls the old model emitted still route back to it — the loop keeps each tool_use/tool_result pair on the model that opened it, for consistency of that exchange, before switching over fully"
     ],
     "correctIndex": 1,
     "explanation": "This is the stateless loop paying off as a prediction. There is no server-side conversation bound to any model — every turn, the harness reassembles the full request from scratch and stamps a model identifier on it. /model changes that per-request field, so the next call simply targets the new model, which reads the entire resent history exactly as any model does on any turn: for the first time. Nothing needs restarting, queuing, or migrating, and there's no split routing — the loop has one outbound call per iteration, and every part of it goes to the currently selected model. One cost caveat worth knowing: prompt caches are model-specific, so the first call after a switch typically misses the cache and pays a fresh write of the prefix on the new model. On Bedrock the mechanics are identical — you're just switching which model ID the harness puts on the request."
@@ -276,7 +276,7 @@
     "difficulty": 3,
     "question": "Mid-session, you drop a new skill directory into ~/.claude/skills. Can the model trigger that skill in this same session?",
     "options": [
-      "Yes, from the next turn — skill descriptions are re-collected at every assembly, the same way CLAUDE.md is re-injected",
+      "Yes, from the next turn — the assembler re-scans the skill directories at every request assembly and re-collects names and descriptions, the same way CLAUDE.md is re-read from disk and re-injected each turn",
       "Yes, but only after the next compaction, which rebuilds the request's stable head with the new description included",
       "Generally not — the skill and plugin inventory is established at session initialization, like the tool set, so a new skill becomes available in a new or restarted session",
       "No, and not next session either, until the skill is also registered under enabledPlugins in settings.json"
@@ -292,7 +292,7 @@
     "question": "System-reminders are consistently injected near the tail of the message array rather than folded into the system prompt at the head. Why is that placement load-bearing?",
     "options": [
       "Because models weight recent tokens most heavily, and reminders must outrank the system prompt to be reliably obeyed",
-      "Because the API enforces strict role alternation, and harness-authored content is only legal when embedded in the latest user-role message",
+      "Because the Messages API enforces strict user/assistant role alternation and rejects system-role content mid-array, so harness-authored state updates are only legal when embedded in the latest user-role message — which is necessarily at the tail",
       "Because tail tokens are billed at cache-read rates while head tokens bill at full input price, making the tail the economical place to inject",
       "Because caching matches from the start of the request: appending at the tail leaves the cached head byte-stable, while mutating the system layer would invalidate the prefix and force an expensive rewrite every time state changed"
     ],
@@ -309,7 +309,7 @@
       "Close — every surface except permissions invalidates the cache, because rules are the one piece of config the payload never carries, while all other edits rewrite the prefix",
       "Wrong twice over: harness-only changes (rules, hooks, modes) never touch tokens or cache at all; tail-delivered updates cost their own tokens but preserve the cached head; only rewrites of the stable head — the CLAUDE.md layer, the tool set — abandon the prefix",
       "Inverted — mid-session edits are free across the board, because the cache keys only on the system prompt, and none of these surfaces ever modify what that parameter contains",
-      "The invalidation claim holds, but the remedy is wrong: the cache re-forms after one turn at the discounted read rate, so any churn's total cost is bounded at a single cheap write"
+      "The invalidation claim holds, but the remedy is wrong: the cache re-forms on the very next turn at the discounted ~0.1x read rate rather than the write premium, so even constant config churn has its total cost bounded at one cheap re-read per edit — freezing config buys nothing measurable"
     ],
     "correctIndex": 1,
     "explanation": "Rank every mid-session edit by where it lands. Class one, harness-only: permission rules, hooks, mode switches — never transmitted, so zero tokens and zero cache effect; change these freely. Class two, tail-delivered: system-reminders, new messages, tool results — they cost their own tokens but append after the cached head, leaving the prefix intact. Class three, stable-head rewrites: editing content in the CLAUDE.md/system layer or changing the tool set perturbs the prefix, and the next request pays a fresh cache write (1.25x base at the 5-minute TTL) for everything after the edit point instead of ~0.1x reads. So 'freeze everything' overcorrects — only class three is priced, and even that is a one-time miss, often worth it when deliberate. The first option flips the exception into the rule; the third pretends class three away; the fourth gets the re-forming right but the arithmetic wrong — the recovery write is the premium operation, and repeated churn pays it repeatedly."
@@ -322,7 +322,7 @@
     "question": "A skill triggers at turn 10 of a session, injecting its roughly 3,000-token body. What happens to that body over turns 11, 12, 13, and beyond?",
     "options": [
       "It is now part of the conversation history, so the stateless loop resends it on every subsequent turn — billed (at cache-read rates once stable) until a compaction folds it or /clear drops it",
-      "The harness removes it from the assembly as soon as the skill's task completes, returning the context to its pre-trigger size",
+      "The harness prunes it from the assembly once the skill's task completes — bodies are tagged as ephemeral content at injection, so the next rebuild drops them and the context returns to its pre-trigger size",
       "It is resent only on turns where the model actively uses the skill; idle turns skip it to save tokens",
       "It migrates into the stable head after one turn, joining the descriptions so that future triggers of the same skill are free"
     ],
@@ -339,7 +339,7 @@
       "User-triggered skills run inside a subagent, while model-triggered ones run inline in the main loop",
       "Model-triggered skills load only the body, while user-triggered ones also inject the description alongside it for grounding",
       "Only the decision differs: model-triggering relies on the ambient description matching the task, while typing the name forces the load directly — after the trigger, both converge on the same mechanics of injecting the body and proceeding with it in context",
-      "User-triggered skills bypass the context entirely — the harness executes the skill's instructions itself without involving the model"
+      "User-triggered skills bypass the model's decision at the mechanical level too: the harness parses the slash name, executes the skill's instructions itself as a script, and injects only the finished output into the conversation as a tool_result for the model to build on"
     ],
     "correctIndex": 2,
     "explanation": "Two doors into one room. On the model-triggered path, the model surveys the ambient name-and-description layer, judges that the task matches a skill, and invokes it; on the user-triggered path, typing the slash name is the signal, and no description matching is involved at all — which is why an explicit invocation works even when a description is too vague for the model to ever pick the skill itself. From the trigger onward the paths are identical: the harness loads the body into the message flow, and the model proceeds with those instructions in context. The distractors invent asymmetries: whether a skill delegates to a subagent is a property of that skill's design, not of which door was used; descriptions are already ambient in every request regardless; and the harness never executes skill instructions itself — a skill body is content for the model to follow, not code for the harness to run."
@@ -354,7 +354,7 @@
       "Hooks, which keep lightweight event names ambient in context and load their scripts only when an event fires",
       "MCP deferred tool loading, where tool names ride along ambiently and full schemas are fetched only when needed — the same trade of a small permanent index deferring a large cost until proven necessary",
       "Compaction, which keeps a summary ambient and reloads the full folded history whenever the model asks for it",
-      "Subagents, which keep an agent roster in the parent's context and page in each agent's transcript on demand"
+      "Subagents, which keep a lightweight agent roster ambient in the parent's context and page each agent's full transcript into the parent's window on demand — the same trade of a small resident index against a large deferred payload"
     ],
     "correctIndex": 1,
     "explanation": "Both mechanisms resolve the same impossible trade-off with the same shape. The model can only use what it can discover, so some index must always be present — but shipping every full definition ambiently would devour the window. Skills split description (always) from body (on trigger); deferred MCP loading splits tool names (always) from full schemas (fetched on demand). Small permanent tax, large deferred cost — paid only when a capability is actually exercised. The distractors fail the pattern on one side or the other. Hooks have no ambient half at all: they're harness-side callbacks costing zero context, with nothing for the model to discover. Compaction is one-way: folded history is not reloadable on request — the summary replaces it. And subagent transcripts never page into the parent; isolation is the entire point, with only the final result returning by value. The recurring design lesson: context is the scarce resource, so indexes stay resident and payloads stay lazy."
@@ -366,7 +366,7 @@
     "difficulty": 4,
     "question": "A skill wraps a heavy forty-step procedure that generates large intermediate outputs. Its author designs it to delegate the work to a subagent rather than run inline. At the mechanism level, what does that buy?",
     "options": [
-      "The subagent inherits the parent's cached prefix, so every step of the procedure bills at cache-read rates instead of as fresh input",
+      "The subagent inherits the parent's cached prefix — the harness assembles it with the same system prompt and tool schemas so the existing cache entries carry over — and every step of the procedure therefore bills at ~0.1x cache-read rates instead of as fresh input",
       "The body never needs to be written at all — the subagent can derive the full procedure from the skill's ambient description alone",
       "It makes the procedure durable: a subagent's context survives /clear and compaction, unlike skill bodies injected inline",
       "The procedure — its instructions, tool calls, and verbose outputs — runs in a separate loop with its own context, and only the final result returns to the parent as a single tool_result; the parent's conversation never carries the bulk"
@@ -382,7 +382,7 @@
     "question": "A colleague asserts: 'Once a skill has fired, its instructions govern the rest of the session — they're in context for good.' What's the correction?",
     "options": [
       "The body lives in the foldable conversation history: a compaction can summarize it away and /clear drops it outright — only the ambient description is guaranteed present afterward, and recovering the full instructions means re-triggering the skill",
-      "The opposite problem is real — bodies expire after a fixed number of turns and must be re-triggered even in short sessions that never compact",
+      "The opposite problem is real — the harness ages injected bodies out of the assembly after a fixed turn budget to bound their tail cost, so a skill must be re-triggered even in short sessions that never compact or clear, which is why long procedures re-fire midway",
       "Right about persistence but wrong about scope: a fired skill's body is promoted into the stable head, where it persists across sessions until the skill is uninstalled",
       "Right for user-triggered invocations, but model-triggered bodies are released as soon as the model emits its next end-of-turn"
     ],

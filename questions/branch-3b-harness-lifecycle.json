@@ -23,7 +23,7 @@
     "options": [
       "Whether the harness will execute a tool call the model requests, without asking you each time",
       "Which topics the model is willing to discuss during the session",
-      "Which files are uploaded to the API provider along with each request",
+      "Which local files the harness bundles into the request payload it uploads to the API provider on each turn of the loop",
       "How many tokens the model may spend on each response"
     ],
     "correctIndex": 0,
@@ -39,7 +39,7 @@
       "Both in ~/.claude/settings.json, with a per-user section for the personal rules",
       "Shared rules in the project's .claude/settings.json (committed); personal rules in .claude/settings.local.json (not committed)",
       "Shared rules in CLAUDE.md; personal rules in ~/.claude/settings.json",
-      "Both in .claude/settings.local.json, since local always overrides shared anyway"
+      "Both in the project's .claude/settings.local.json, committed to git — the local tier overrides every other settings file, so rules placed there are guaranteed to apply"
     ],
     "correctIndex": 1,
     "explanation": "settings.json comes in tiers precisely for this split: the project file (.claude/settings.json) is meant to be committed and shared, while the local project file (.claude/settings.local.json) is personal and typically gitignored. The user-level file (~/.claude/settings.json) applies across all your projects, so it's the wrong home for repo-specific team policy. CLAUDE.md is the wrong surface entirely — it's request-shaping content the model reads as instructions, not machine-enforced configuration; a 'rule' there is advisory prose, not a gate. Note the resolution nuance: for most settings the local tier takes precedence over project, but permissions specifically combine deny-wins across all tiers rather than one file simply overriding another."
@@ -51,7 +51,7 @@
     "difficulty": 2,
     "question": "A project's settings contain the permission rule Bash(npm run test:*). What does this rule do?",
     "options": [
-      "It denies the model access to any npm command that touches test files",
+      "It denies the model access to any npm command that touches test files — rules written with a trailing * are treated as deny patterns unless explicitly allowlisted",
       "It defines an npm script alias the model can invoke as a custom tool",
       "It caps how long any npm test process may run before the harness kills it",
       "It matches Bash tool calls whose command starts with 'npm run test', so the listed action applies to those without prompting"
@@ -82,7 +82,7 @@
     "question": "A colleague says: 'I wrote NEVER run destructive git commands in our CLAUDE.md, so that's just as safe as a deny rule in settings.json.' What's wrong with that claim?",
     "options": [
       "Nothing — CLAUDE.md is re-injected every request, so the instruction is always in force",
-      "CLAUDE.md is only read at session start, so the instruction can silently go stale mid-session",
+      "CLAUDE.md is resolved only once at session initialization, like the tool inventory and MCP connections, so the instruction silently goes stale mid-session the moment anyone edits the file on disk",
       "A CLAUDE.md line is advisory text the model can misweigh or deprioritize; a deny rule is enforced by the harness before any tool call executes, regardless of what the model decides",
       "CLAUDE.md instructions apply only to file-editing tools, never to Bash commands"
     ],
@@ -96,7 +96,7 @@
     "difficulty": 3,
     "question": "A colleague claims: 'The model reads our permission rules from settings.json at the start of the session, which is how it knows not to attempt forbidden commands.' What's the correction?",
     "options": [
-      "Mostly right, but the rules arrive via the system prompt rather than being read from disk",
+      "Mostly right, but the rules arrive via the system prompt the harness assembles at session start — the model can't read disk, so the harness serializes settings.json into that block for it",
       "Wrong — permission rules are never transmitted to the model; the harness applies them to tool calls, and a blocked call comes back to the model as a rejection in the tool_result",
       "Right for Anthropic API sessions, but on Bedrock the rules are enforced by IAM instead",
       "Wrong — the model discovers the rules empirically by parsing the harness's error messages at session start"
@@ -112,7 +112,7 @@
     "question": "You run /compact in a long Claude Code session. What does it actually do?",
     "options": [
       "Compresses the transcript file on disk so the project folder takes less space",
-      "Truncates the conversation to the last few messages, discarding everything else",
+      "Truncates the assembled context to the most recent exchanges and discards everything older — the same reset as /clear, but keeping the last handful of turns in place",
       "Switches the session to a smaller, cheaper model to reduce spend from that point on",
       "Has the conversation's older history summarized, so future requests carry the summary plus recent exchanges instead of every old turn"
     ],
@@ -126,7 +126,7 @@
     "difficulty": 2,
     "question": "You've finished a task and are about to start something completely unrelated in the same Claude Code window. Why is /clear usually the better move than /compact here?",
     "options": [
-      "/clear preserves more of the old conversation than /compact does, so it's safer",
+      "/clear folds the history into a summary just as /compact does, but keeps a longer recent tail, so it preserves more of the old conversation and is the safer of the two resets",
       "/compact permanently deletes your transcript from disk while /clear keeps it",
       "There's no practical difference — both reset the context window the same way",
       "/clear drops the accumulated context entirely and costs no model call; /compact pays a model pass to summarize history you no longer need"
@@ -157,9 +157,9 @@
     "question": "At the mechanism level, why must something like compaction exist in Claude Code at all?",
     "options": [
       "Because transcripts would otherwise grow past filesystem limits on long projects",
-      "Because API providers reject any conversation older than a fixed number of turns",
+      "Because API providers enforce a hard cap on the number of messages per request — past a few hundred turns both Bedrock and the Anthropic API reject the payload, so the harness must fold older turns together to stay under it",
       "Because every turn resends the entire accumulated conversation into a finite context window — without a bound, cost grows roughly quadratically and the session eventually hits the window and cannot continue",
-      "Because the model's attention quality degrades to zero after a few dozen turns, requiring a reset"
+      "Because the model's attention decays with distance — past a few dozen turns the earliest messages contribute effectively nothing, so the harness must periodically re-encode them into a form attention can still reach"
     ],
     "correctIndex": 2,
     "explanation": "This follows directly from the stateless loop. Nothing persists server-side between turns, so the harness rebuilds and resends the whole conversation every turn. Two consequences compound: total session cost scales roughly with n squared in conversation length (each of n turns pays for everything before it), and the assembled context is hard-capped by the model's window. Unbounded accumulation therefore doesn't just get expensive — it hits the wall, and the session literally cannot proceed. Compaction is the one mechanism that bounds the growth, by folding old turns into a summary. Note the division of labor with caching: caching makes the resend cheap (reads at a fraction of base input price), but only compaction makes it bounded — a cached 190k-token prefix still occupies 190k tokens of window. You need both, on Bedrock exactly as on the Anthropic API."
@@ -172,7 +172,7 @@
     "question": "Compaction saves money over the rest of a session, but it isn't free at the moment it runs. What is its immediate cost?",
     "options": [
       "A second, parallel session is spawned to hold the summary, doubling ambient cost until it exits",
-      "The harness re-uploads your project files so the summary has ground truth to check against",
+      "The harness re-reads and re-uploads every file the session touched so the summarizer can check its summary against ground truth — on a large project that re-read is itself a substantial one-time input cost",
       "The durable transcript must be rewritten from scratch, which blocks the session while it runs",
       "The compactor must read essentially the whole conversation to write the summary — a full-context model call — and the rewritten prefix abandons the existing cache, forcing a fresh cache write"
     ],
@@ -188,7 +188,7 @@
     "options": [
       "Wrong on both counts: compaction manages the context window, not disk, and the durable .jsonl transcript is append-only — the fold appends a summary and a compact_boundary record; nothing is erased from disk",
       "Right about the deletion, but the freed resource is API quota rather than disk space",
-      "Wrong — compaction doesn't touch the transcript because summaries are held only in memory and vanish when the session ends",
+      "Wrong — compaction doesn't touch the transcript because the summary is held only in the harness's in-memory working state; it vanishes when the process exits, which is why a resumed session always rebuilds the full pre-fold history",
       "Mostly right, except the deleted messages are first archived to a backup directory"
     ],
     "correctIndex": 0,
@@ -203,7 +203,7 @@
     "options": [
       "Auto-compaction always switches the session to a model that has no cache history yet",
       "Folding old turns into a summary rewrote the conversation's prefix, so the old cached prefix no longer matches — the post-fold context must be written to cache fresh",
-      "The compaction call consumed the cache's read allowance for that billing window",
+      "The compaction call consumed the session's cache-read allowance for the current five-minute TTL window, so the next request bills as writes until the allowance resets at the next window boundary",
       "Compaction disables caching for one turn so the summary can't be poisoned by stale entries"
     ],
     "correctIndex": 1,
@@ -234,7 +234,7 @@
       "Caching solves cost but not the bound: the context window is a hard cap that cached tokens still fill, so an uncompacted session eventually cannot continue at all — and cache reads are discounted, not free, on a resend that keeps growing",
       "Nothing is wrong — sessions with caching enabled genuinely never need compaction",
       "Caching and compaction are mutually exclusive; enabling one disables the other, so the choice is forced",
-      "The argument holds on the Anthropic API but fails on Bedrock, where prompt caching is unavailable"
+      "The argument holds on the Anthropic API, but on Bedrock prompt caching must be provisioned per model and region and is off by default — an unprovisioned Bedrock session pays full input price on every resend, so compaction remains the only cost lever there"
     ],
     "correctIndex": 0,
     "explanation": "The colleague has half the picture. Caching attacks price: a stable prefix re-read from cache costs a small fraction of base input, which makes the every-turn resend affordable. But it does nothing to the window: a cached token still occupies its slot in the model's finite context, so an ever-growing conversation marches toward the ceiling regardless of how cheaply it gets there — and at the wall, the session simply cannot take another turn. Compaction attacks size: it bounds what's resent. The lesson's formulation is exact: caching makes the resend cheap; compaction makes it bounded; you need both. There's also a residual cost point — discounted reads on an unbounded, growing prefix still accumulate, and output pricing never had a cache discount. The Bedrock distractor is false: prompt caching is supported for Claude models on Bedrock, and compaction is harness logic that's provider-independent anyway."
@@ -246,7 +246,7 @@
     "difficulty": 3,
     "question": "Mid-session, you edit the project's CLAUDE.md to add a new coding rule. When does the model see the change, and why?",
     "options": [
-      "Never in this session — context files are frozen into the session when it starts",
+      "Never in this session — context files are resolved once at session initialization alongside the tool inventory and MCP connections, so edits surface only in a new or restarted session",
       "On the next turn — the harness rebuilds the request every turn and re-injects CLAUDE.md fresh, so the new content rides along on the next assembly",
       "Immediately, because the harness pushes a live update into the model's server-side session state",
       "Only after you run /compact, which is what re-reads context files"
@@ -261,7 +261,7 @@
     "difficulty": 3,
     "question": "What is a system-reminder in a Claude Code session?",
     "options": [
-      "A scheduled notification the CLI shows you in the terminal, outside the conversation",
+      "A scheduled notification the CLI renders in the terminal status line — harness-side UI that costs no tokens because it never enters the message stream the model receives",
       "A server-side flag the API provider attaches to responses when usage limits approach",
       "An entry the model writes to its own long-term memory to consult in later sessions",
       "A block of context the harness injects into the message stream — not typed by you — used to surface state changes and guidance to the model mid-conversation"
@@ -277,7 +277,7 @@
     "question": "Mid-session you make two changes: (a) you edit CLAUDE.md, and (b) you add a new MCP server to your configuration. Which change takes effect on the very next turn of the running session?",
     "options": [
       "Both — all configuration re-resolves on every turn",
-      "The MCP server, because tool definitions are refreshed each turn while context files are session-scoped",
+      "The MCP server — tool schemas are re-fetched from every connected server at each request assembly so new tools appear immediately, while context files like CLAUDE.md are snapshotted into the session once at startup and never re-read",
       "The CLAUDE.md edit — context files are re-read into every request, whereas MCP servers are processes connected at session scope, so a new server generally isn't live until a new or restarted session picks it up",
       "Neither — both kinds of change require ending the session"
     ],
@@ -294,7 +294,7 @@
       "A cache miss from the CLAUDE.md layer onward: it sits early in the assembled request, so changing it invalidates the cached prefix behind it and forces a re-write of everything after that point",
       "No cost change — context files are exempt from caching, so editing them is always free",
       "A cheaper call, because the harness diffs the file and sends only the changed lines",
-      "A one-turn fallback to an uncached request, after which the old cache resumes as before"
+      "A one-turn fallback to an uncached request — the harness detects the edit, bypasses the cache for that single call, and the previously cached prefix resumes matching on the following turn once the content is stable again"
     ],
     "correctIndex": 0,
     "explanation": "Prompt assembly follows a stability gradient — stable layers first, volatile content last — precisely because caching matches prefixes byte-for-byte from the start. CLAUDE.md is injected into the early, stable region of the request. Edit it and every cached token from that layer onward stops matching: the next call reads little from cache and re-writes the tail of the prefix fresh, which on a long session can be a substantial one-time cost. It's structurally the same event as compaction's cache reset — an early-region rewrite abandons the prefix — just triggered by you. There is no diffing; the stateless loop resends full content every turn, and caching is the only discount. The 'old cache resumes' option misunderstands matching: the old entries are simply never matched again, because the prefix has permanently changed. Batch your CLAUDE.md edits accordingly on long sessions."
@@ -306,7 +306,7 @@
     "difficulty": 4,
     "question": "A colleague says: 'When I --resume a session from yesterday, Claude Code restores it exactly — the next request is byte-identical to what it would have been had I never left.' What's the correction?",
     "options": [
-      "Right in general, wrong only if the transcript file was compacted overnight",
+      "Right in general — the harness persists the exact assembled request alongside the transcript precisely so resume can replay it — and wrong only if the session auto-compacted before you left, since the boundary record then forces a fresh rebuild of the request",
       "Wrong — resume is a reconstruction, not a restore: the harness replays the durable transcript but assembles the next request fresh, with the current date, current tool list, and freshly injected system-reminders, so it is not byte-identical",
       "Wrong — resume sends only a summary of the old session, never its actual messages",
       "Right — byte-identity is guaranteed by design so that the prompt cache always hits on resume"
@@ -337,7 +337,7 @@
     "question": "A colleague installs thirty skills, uses about two of them, and argues: 'Unused skills are free — the body only loads when triggered.' What's the flaw?",
     "options": [
       "Every one of the thirty descriptions is injected into every request, so unused skills impose a small ambient token cost on every single API call — and skill-set churn perturbs the cached region they occupy",
-      "Skills are actually free only when installed at the project scope; user-scope skills always load their bodies",
+      "Skills are genuinely free only at the project scope, where the harness lazy-loads them per trigger; user-scope skills under ~/.claude/skills preload their full bodies at session start so they can fire without a disk read",
       "The flaw is the opposite — even triggered skills cost nothing because skill content is exempt from token billing",
       "There is no flaw; descriptions are stored harness-side and never transmitted"
     ],
@@ -353,7 +353,7 @@
     "options": [
       "They're identical — both keep a description resident in context at all times",
       "Commands are more expensive ambiently because their full file stays loaded; skills load nothing until invoked",
-      "Skills cost ambient tokens only in the session where they were last used; commands always cost a fixed header",
+      "Skills cost ambient tokens only in sessions where they have fired at least once — the description loads on first use; commands bill a small fixed header on every request so the parser can match /name against them",
       "A command costs zero ambient tokens (its content enters the messages only when you type /name); a skill's description is present in every request so the model can trigger it itself"
     ],
     "correctIndex": 3,
@@ -368,7 +368,7 @@
     "options": [
       "The reliable skill was installed first, and earlier-loaded skills get scheduling priority in the harness",
       "The quality of the frontmatter description — at decision time the model sees only names and descriptions, so a vague description gives it nothing to match the task against, no matter how good the unseen body is",
-      "The failing skill's body exceeds a size limit, causing the harness to silently skip it at assembly",
+      "The failing skill's body exceeds the assembler's per-skill size budget, so the harness silently drops it from the ambient layer at assembly time — the model never sees the skill exists, which is why it never fires no matter how well the description is written",
       "The reliable skill registered a keyboard shortcut, which is the primary trigger path for skills"
     ],
     "correctIndex": 1,
@@ -381,7 +381,7 @@
     "difficulty": 4,
     "question": "A colleague reasons: 'Skill bodies load on trigger, so every time a skill fires it must rewrite the front of the prompt — that's a cache reset per invocation, just like compaction.' What's the correction?",
     "options": [
-      "Correct — every skill invocation abandons the whole cached prefix, which is why skills are expensive",
+      "Correct — the body is spliced in ahead of the conversation history so the model reads instructions before context, and that splice rewrites the request from the descriptions block onward, abandoning the cached prefix on every single invocation — which is why heavyweight skills are expensive",
       "Backwards — bodies live in the stable head and descriptions arrive per-invocation in the tail",
       "Half wrong: the body is injected into the message flow at invoke time — appended content in the volatile region, like any new turn — whereas it's changing the installed skill set (the always-present descriptions) that perturbs the stable, cached region",
       "Wrong only because skill bodies are transmitted out-of-band and never enter the context at all"

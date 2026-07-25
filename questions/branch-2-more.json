@@ -67,8 +67,8 @@
     "question": "In the default permission mode (shown as 'Manual'), what happens when Claude wants to read a file versus edit a file?",
     "options": [
       "Reads run without asking; edits and non-read-only commands prompt for your approval",
-      "Both reads and edits prompt for approval every single time",
-      "Both reads and edits run without asking; only shell commands prompt",
+      "Both reads and edits prompt for approval every single time, since even a file read could expose sensitive data",
+      "Both reads and edits run without asking; only shell commands and network requests trigger a prompt",
       "Nothing runs at all until you approve a written plan"
     ],
     "correctIndex": 0,
@@ -126,10 +126,10 @@
     "difficulty": 1,
     "question": "You type `@` at the start of your input while writing a prompt in Claude Code. What does it do?",
     "options": [
-      "Mentions another agent so it joins the session",
+      "Mentions another running agent by name so it joins the current session as a collaborator",
       "Marks the message as high priority for the model",
       "Opens file path autocomplete so you can drop a file reference into your prompt",
-      "Sends the prompt directly to the API, skipping the harness"
+      "Sends the prompt straight to the model API endpoint, skipping the harness's prompt assembly step"
     ],
     "correctIndex": 2,
     "explanation": "`@` triggers file path autocomplete: you pick a path and a reference to that file lands in your prompt, which is the quickest way to point Claude at a specific file without typing the full path or asking it to search. It belongs to a small family of prefix characters that change what the input line means: `/` invokes a command or skill, `!` runs a shell command directly, and `?` toggles the shortcut help panel. There's no agent-mention or priority-flag feature behind `@`, and nothing can skip the harness — every prompt goes through prompt assembly before it becomes an API request, because the harness is the only thing that talks to the API. These prefixes are pure harness features; the model only ever sees their results in the assembled context."
@@ -171,9 +171,9 @@
     "difficulty": 2,
     "question": "You want to re-find a long prompt you wrote earlier in this project without arrow-keying through everything. What does Ctrl+R do in Claude Code?",
     "options": [
-      "Re-runs your most recent prompt exactly as submitted",
+      "Re-runs your most recent prompt exactly as submitted, reusing the same permission approvals",
       "Redraws the terminal screen after visual corruption",
-      "Rewinds the session to the checkpoint you select",
+      "Rewinds the session, restoring conversation and file state to the checkpoint you select",
       "Opens reverse history search: type to filter, Ctrl+R again cycles older matches"
     ],
     "correctIndex": 3,
@@ -187,9 +187,9 @@
     "question": "Both `/clear` and `/code-review` live behind the `/` prefix, yet `/code-review` consumes tokens and `/clear` costs nothing. Why?",
     "options": [
       "/clear is a built-in command running deterministic harness code locally; /code-review is a bundled skill that injects a prompt and has the model do the work",
-      "Both are skills, but /clear's prompt is short enough to fall under the free threshold",
+      "Both are bundled skills, but /clear's prompt is short enough to fall under the harness's free threshold of roughly a thousand tokens per invocation",
       "/code-review is routed to a dedicated review endpoint with separate per-review pricing",
-      "/clear does call the model, but with an empty conversation, which prompt caching makes free"
+      "/clear does call the model once to confirm the reset, but with an empty conversation, and a fully cached empty request is free on both Bedrock and the Anthropic API"
     ],
     "correctIndex": 0,
     "explanation": "The `/` menu mixes two different species. Built-in commands like `/clear` and `/config` execute fixed logic inside the CLI process — same input, same behavior, and typically no API call at all, hence no tokens. Bundled skills like `/code-review`, `/debug`, and `/loop` are prompt-based: invoking one injects prepared instructions into the conversation and the model orchestrates the work with its tools — real agentic workload, with the model's variability and cost, billed to your AWS account when you're on Bedrock. A skill's body also stays in context for the rest of the session, a recurring cost in every resend. Quick tell: needs judgment → skill; manipulates session state → command. There's no free-tier threshold, no separate review endpoint (all requests go to your configured model endpoint), and `/clear` makes no model call — caching never enters into it."
@@ -217,9 +217,9 @@
     "question": "Your team wants `/code-review` to run its own review checklist instead of the stock behavior, for everyone working in the repository. How do you do it?",
     "options": [
       "Edit the bundled skill's file inside the Claude Code installation directory",
-      "You can't override bundled names; publish yours under a new name like /team-review",
+      "You can't shadow bundled skill names; publish the checklist under a distinct name like /team-review instead",
       "Create a skill named code-review in the project's .claude/skills/ — same-named skills replace bundled ones",
-      "Set skillOverrides in settings.json to point the bundled skill at your file"
+      "Set skillOverrides in the project's settings.json to point the bundled code-review skill at your own checklist file"
     ],
     "correctIndex": 2,
     "explanation": "Bundled skills sit at the lowest layer of name resolution: a skill with the same name at the enterprise, personal (`~/.claude/skills/`), or project (`.claude/skills/`) level replaces the bundled one. Dropping a `code-review` skill into the project's `.claude/skills/` and committing it means everyone's `/code-review` now runs the team checklist — a clean way to standardize review criteria in a repo. Editing files inside the installation is the wrong layer (changes would be fragile and lost on update; the override mechanism exists so you never need to). Bundled names absolutely can be shadowed, so a new name isn't required. The `skillOverrides` distractor is the near-miss: it's a real setting, but it hides a skill or collapses it to name-only in the model's skill listing to save context — it doesn't substitute your implementation. Note the contrast: built-in commands (like `/clear`) aren't override-able files at all; they're part of the CLI."
@@ -231,9 +231,9 @@
     "difficulty": 2,
     "question": "What does the `/doctor` command do?",
     "options": [
-      "Tests connectivity to your model endpoint and reports your remaining Bedrock quota",
+      "Tests connectivity to your configured model endpoint and reports the remaining Bedrock invocation quota for your region",
       "Scans your codebase for bugs and proposes fixes",
-      "Repairs corrupted transcript files so old sessions can be resumed",
+      "Repairs corrupted transcript JSONL files under ~/.claude/ so old sessions can be resumed after a crash",
       "Checks installation health and settings problems, including an estimate of what your skill listing costs in context"
     ],
     "correctIndex": 3,
@@ -247,8 +247,8 @@
     "question": "What's the difference between `--append-system-prompt` and `--system-prompt`?",
     "options": [
       "They're aliases; --system-prompt is the newer preferred spelling",
-      "--system-prompt applies to the first turn only, while --append-system-prompt persists across turns",
-      "--append-system-prompt edits CLAUDE.md on disk, while --system-prompt injects text per request",
+      "--system-prompt injects your text into the first API request only and drops it afterward, while --append-system-prompt re-injects the text on every turn of the session",
+      "--append-system-prompt appends your text to the project's CLAUDE.md on disk so it persists across sessions, while --system-prompt injects text per request without touching files",
       "--append-system-prompt adds your text after the default system prompt; --system-prompt replaces the entire thing, dropping Claude Code's own operating instructions"
     ],
     "correctIndex": 3,
@@ -276,10 +276,10 @@
     "difficulty": 2,
     "question": "You resume a past session with `claude --resume <id> --fork-session`. What does adding `--fork-session` change?",
     "options": [
-      "It resumes the session in a separate git worktree so file changes stay isolated",
+      "It resumes the session inside a separate git worktree so file changes stay isolated from your main checkout",
       "It continues the conversation under a new session ID, leaving the original transcript untouched",
       "It spawns a subagent that works on the old session while you start a fresh one",
-      "It copies the session to a shared location so a teammate can resume it too"
+      "It copies the transcript to a shared team location so a teammate can resume the session from their machine"
     ],
     "correctIndex": 1,
     "explanation": "`--fork-session` resumes the conversation under a new session ID: your continued work is recorded as a fresh transcript, and the original session's record is left exactly as it was — so you can branch an exploration without contaminating the point you might want to return to. Why this is cheap is the keystone in action: a 'session' is only a local transcript file plus whatever the harness resends as history; forking is essentially copying a file and continuing from it — nothing server-side exists to duplicate, on Bedrock or the Anthropic API alike. The distractors graft on unrelated machinery: worktree isolation is a git-level technique used in multi-agent workflows, not this flag; no subagent is involved — you get one ordinary session; and transcripts live locally under `~/.claude/projects/`, with no shared-location copy feature behind this flag."
@@ -292,9 +292,9 @@
     "question": "When Claude Code runs against Bedrock, how does it decide which AWS region to send requests to?",
     "options": [
       "AWS_REGION first, then AWS_DEFAULT_REGION, then the active AWS profile's configured region",
-      "It defaults to us-east-1 unless you pass a --region flag at startup",
+      "It defaults to us-east-1, Bedrock's home region, unless you pass a --region flag at startup",
       "The region is taken from the model ID string in your settings.json",
-      "Bedrock routes each request automatically to the nearest region with capacity"
+      "Bedrock routes each request automatically to the geographically nearest region with spare capacity"
     ],
     "correctIndex": 0,
     "explanation": "Region resolution follows the standard AWS chain: `AWS_REGION` wins if set, then `AWS_DEFAULT_REGION`, then the region configured on the active AWS profile. This mirrors how credentials resolve — Claude Code leans on the AWS SDK's conventions rather than inventing its own — and `/status` shows both the resolved region and where the setting came from, which is the first thing to check when requests land somewhere unexpected. There's no `--region` flag or hard-coded us-east-1 default in the harness. The model-ID distractor has a grain of truth worth untangling: cross-region inference profile IDs carry a geographic prefix (like `us.`) that governs where inference may run, but that's not how the harness picks the endpoint region for your requests. And Bedrock doesn't auto-route to 'nearest capacity' — your requests go to the region your configuration resolves, and regional model availability is exactly why that choice matters."

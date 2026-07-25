@@ -36,9 +36,9 @@
     "difficulty": 2,
     "question": "A teammate who runs Claude Code against AWS Bedrock asks why they've never needed `/login`. What's the accurate answer?",
     "options": [
-      "Bedrock users authenticate through /login too, but only once ever, so they forgot doing it",
+      "Bedrock users authenticate through /login too, but the OAuth token it stores stays valid for twelve months, so they only did it once and forgot",
       "With CLAUDE_CODE_USE_BEDROCK set, auth comes from the standard AWS credential chain, so there's no Anthropic account login step",
-      "Claude Code disables all authentication when talking to Bedrock because AWS traffic is inside a VPC",
+      "Claude Code disables all authentication when talking to Bedrock because the traffic stays inside your VPC and never crosses the public internet",
       "/login is only required for the -p headless mode, which they apparently never use"
     ],
     "correctIndex": 1,
@@ -51,8 +51,8 @@
     "difficulty": 2,
     "question": "What is the key difference between `/compact` and `/clear`?",
     "options": [
-      "/compact deletes old transcript files from disk, while /clear only hides them from view",
-      "/clear summarizes the conversation into a shorter form; /compact throws it away entirely",
+      "/compact deletes old transcript JSONL files from ~/.claude/ to reclaim disk space, while /clear only hides them from the current session view",
+      "/clear summarizes the conversation into a shorter form so context survives; /compact throws the whole conversation away and starts from zero",
       "/compact is automatic-only and cannot be invoked manually, unlike /clear",
       "/compact replaces the conversation with a summary so work can continue with context; /clear drops the conversation entirely"
     ],
@@ -69,7 +69,7 @@
       "Having Claude research the task and propose an approach before it is allowed to change anything",
       "Scheduling a session to run later at a planned time",
       "Making Claude respond faster by planning several turns in advance",
-      "Splitting the work across multiple parallel agents according to a plan"
+      "Splitting the work across multiple parallel subagents, each assigned one step of a pre-drafted plan before execution begins"
     ],
     "correctIndex": 0,
     "explanation": "Plan mode restricts Claude to read-only exploration: it can search, read files, and reason, but it can't edit files or run state-changing commands. Instead it produces a plan for you to review; only after you approve does it proceed to execute. The mechanism is a permission mode — the harness withholds approval for mutating tools, which is why this is enforced reliably rather than being a polite request in the prompt. It's the right mode when the change is risky or ambiguous and you want to sanity-check the approach before any file is touched. The distractors misread the word 'plan': there's no scheduling feature by that name, no multi-turn lookahead for speed, and while multi-agent workflows exist, plan mode itself is about gating execution behind your approval, not about parallelism."
@@ -81,8 +81,8 @@
     "difficulty": 1,
     "question": "You switch Claude Code into auto-accept (acceptEdits) mode. What changes compared to the default mode?",
     "options": [
-      "Claude stops asking for your confirmation on anything, including arbitrary shell commands",
-      "Claude automatically accepts your prompts without you pressing Enter",
+      "Claude stops asking for your confirmation on anything at all, including arbitrary shell commands and file deletions",
+      "Claude automatically accepts and submits your typed prompts without you having to press Enter to confirm each one",
       "File edits are applied without a permission prompt each time, instead of asking you to approve each one",
       "Claude switches to a faster model to keep up with the accepted edits"
     ],
@@ -111,8 +111,8 @@
     "difficulty": 2,
     "question": "What distinguishes bypassPermissions mode from acceptEdits mode?",
     "options": [
-      "bypassPermissions is set per-project while acceptEdits is set per-user",
-      "acceptEdits also auto-approves shell commands; bypassPermissions only covers edits",
+      "bypassPermissions can only be set per-project in .claude/settings.json, while acceptEdits can only be enabled per-user in ~/.claude/settings.json",
+      "acceptEdits auto-approves file edits and shell commands alike, while bypassPermissions covers only file edits but also suppresses the confirmation dialog",
       "They behave identically; bypassPermissions is just the legacy name for acceptEdits",
       "acceptEdits auto-approves file edits only, while bypassPermissions skips permission prompting entirely, including for shell commands"
     ],
@@ -156,9 +156,9 @@
     "difficulty": 2,
     "question": "You type `!git status` at the Claude Code prompt. What happens?",
     "options": [
-      "Claude is asked to run `git status` and must first request permission for the Bash tool",
+      "Claude is asked to run `git status` on your behalf and must first request permission for the Bash tool as with any command",
       "The input is rejected because `!` is reserved for history expansion",
-      "Claude Code opens a persistent subshell that replaces the session until you type exit",
+      "Claude Code opens a persistent interactive subshell that replaces the session prompt until you type exit to return",
       "The command runs directly in your shell, and its output is added to the session so Claude can see it"
     ],
     "correctIndex": 3,
@@ -187,8 +187,8 @@
     "question": "You run `/init` in a repository that Claude Code has never seen. What does it do?",
     "options": [
       "Explores the codebase and generates a CLAUDE.md file documenting the project for future sessions",
-      "Runs `git init` and creates an initial commit on your behalf",
-      "Creates the ~/.claude directory and default global settings.json",
+      "Runs `git init`, writes a language-appropriate .gitignore, and creates an initial commit on your behalf",
+      "Creates the ~/.claude directory scaffold, including a default global settings.json and an empty skills folder",
       "Registers the project with your Anthropic account so usage is billed to it"
     ],
     "correctIndex": 0,
@@ -216,8 +216,8 @@
     "difficulty": 2,
     "question": "What is the key operational difference between a skill and a slash command in Claude Code?",
     "options": [
-      "Skills run locally in the harness while slash commands are executed by the API server",
-      "Slash commands are built-in only, whereas skills are the only way users can add custom behavior",
+      "Skills run locally inside the harness process, while slash commands are executed server-side by the API before the response streams back",
+      "Slash commands are built-in and cannot be user-defined, whereas skills are the only supported way for users to add custom behavior",
       "Skills can call tools but slash commands cannot",
       "A slash command is invoked explicitly by the user; a skill can be triggered by the model when its description matches the task"
     ],
@@ -247,9 +247,9 @@
     "question": "What does running `claude -p \"summarize the failing tests\"` do differently from just running `claude`?",
     "options": [
       "It runs headless: processes the single prompt, prints the result to stdout, and exits instead of opening the interactive UI",
-      "It runs the prompt in plan mode, printing a proposed plan for approval",
+      "It runs the prompt in plan mode, printing a proposed step-by-step plan to stdout for your approval before anything executes",
       "It runs the prompt with elevated permissions, skipping all confirmation prompts",
-      "It pipes the prompt to the most recently used session and reattaches to it"
+      "It pipes the prompt into the most recently used session for this directory and reattaches your terminal to that conversation"
     ],
     "correctIndex": 0,
     "explanation": "`-p` (`--print`) is headless mode: Claude Code takes the prompt from the command line, runs the full agentic loop — including tool calls — non-interactively, writes the final result to stdout, and exits. That makes it composable in shells and CI: pipe input in, capture output, chain with `--output-format json` for machine-readable results. The full harness machinery still applies (same context assembly, same permission rules — which is why CI usage often pairs it with explicit `--allowedTools`). The 'p' tempts people toward 'plan', but plan mode is a permission mode (`--permission-mode plan`), not this flag. It doesn't elevate permissions — that misconception would make `-p` dangerous, and it's the separate, deliberately verbose `--dangerously-skip-permissions` flag. And it starts a fresh conversation unless you explicitly combine it with `--continue` or `--resume`."
@@ -261,8 +261,8 @@
     "difficulty": 2,
     "question": "What is the difference between `claude --continue` and `claude --resume`?",
     "options": [
-      "--continue reopens a crashed session; --resume reopens one you exited cleanly",
-      "--continue keeps the conversation but resets permissions; --resume keeps both",
+      "--continue reopens a session that crashed or was killed mid-turn, recovering its state from disk; --resume reopens one you exited cleanly with Ctrl+D",
+      "--continue keeps the conversation history but resets permission decisions to your settings defaults; --resume preserves both the conversation and the grants",
       "--continue loads the most recent conversation in the current directory; --resume lets you pick a specific past session by ID, name, or from a picker",
       "They are aliases; --resume is simply the long form of --continue"
     ],
@@ -276,10 +276,10 @@
     "difficulty": 2,
     "question": "What does setting the environment variable CLAUDE_CODE_USE_BEDROCK=1 actually change?",
     "options": [
-      "It downloads Claude model weights so the CLI can run them inside your AWS account",
+      "It downloads a distilled copy of the Claude model weights into your AWS account so the CLI can run inference locally through SageMaker",
       "The harness routes its model API calls to Amazon Bedrock, authenticated via your AWS credentials, instead of the Anthropic API",
       "It switches the CLI binary to a special AWS build with different commands",
-      "It enables AWS-specific tools like an S3 browser inside the session"
+      "It enables AWS-specific tools inside the session, such as an S3 browser and a CloudWatch log reader for debugging deployed services"
     ],
     "correctIndex": 1,
     "explanation": "The flag changes one thing: the destination and signing of API requests. With it set, the same harness sends its (Anthropic-shaped) requests to the Bedrock endpoint in your configured AWS region, signed with credentials from the standard AWS chain — env vars, a profile, an IAM role. Everything above that layer is untouched: same CLI, same slash commands, same tools, same permission system, and the same Claude model weights answering — Bedrock is a different door to the same model, hosted by AWS. That's why the weights-download option is wrong twice over: no weights ever leave the provider, on either path. There's no separate AWS build of the CLI, and no bonus AWS tools appear in the session. Practical corollaries: `/login` becomes irrelevant, model selection uses Bedrock model IDs or inference profiles, and cost shows up on the AWS bill rather than an Anthropic console."

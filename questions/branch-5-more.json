@@ -23,7 +23,7 @@
     "options": [
       "Run /login to re-establish the session with Anthropic",
       "Set a fresh ANTHROPIC_API_KEY in the environment and retry",
-      "Restart Claude Code — a new session mints new Bedrock tokens automatically",
+      "Restart Claude Code — on startup the harness mints a fresh AWS_BEARER_TOKEN_BEDROCK session token automatically",
       "Refresh your AWS credentials (e.g. `aws sso login`) — optionally automated via the awsAuthRefresh setting"
     ],
     "correctIndex": 3,
@@ -52,7 +52,7 @@
     "question": "Your IAM policy grants `bedrock:InvokeModel` on the foundation-model ARN, yet Claude Code still can't run. What's the likely gap?",
     "options": [
       "Bedrock requires full `bedrock:*` permissions for interactive clients",
-      "The policy must also reference your Anthropic organization ID",
+      "The policy must also reference your Anthropic organization ID, since Bedrock validates each invocation against the Anthropic account that licenses the weights",
       "The policy is missing `bedrock:InvokeModelWithResponseStream` and doesn't cover the inference-profile ARN the harness actually invokes",
       "IAM policies can't authorize Bedrock model calls; that requires an SCP"
     ],
@@ -66,7 +66,7 @@
     "difficulty": 2,
     "question": "Invoking a Claude model on Bedrock by its bare foundation-model ID fails with \"on-demand throughput isn't supported\" for this model. What is Bedrock telling you?",
     "options": [
-      "Your on-demand quota for this model is exhausted for the day",
+      "Your account's on-demand TPD quota for this model in this region is exhausted; requests resume when the daily bucket resets",
       "This model is only served through an inference profile — invoke the geography-prefixed profile ID instead",
       "The model requires a paid support plan before on-demand use",
       "Streaming is disabled for this model; switch to non-streaming calls"
@@ -82,7 +82,7 @@
     "question": "Your team wants every Bedrock-backed Claude Code install to use the exact same pinned model. Where does that pin actually live?",
     "options": [
       "In the Anthropic console, as the organization's default model",
-      "In the Bedrock console's per-account default-model setting",
+      "In the Bedrock console's per-account default-model setting, which every SigV4-signed invocation in the account inherits",
       "Each user runs /model once; the choice syncs across the team automatically",
       "In environment variables like ANTHROPIC_MODEL and the ANTHROPIC_DEFAULT_*_MODEL family, set to inference-profile IDs"
     ],
@@ -98,7 +98,7 @@
     "options": [
       "Account-specific ARNs that wrap a model so usage can be cost-tracked and access-controlled per application or team",
       "Profiles that pre-route requests to whichever geography is cheapest that hour",
-      "Reserved capacity blocks guaranteeing throughput for one application",
+      "Reserved capacity blocks — model units purchased per application to guarantee its throughput outside the shared on-demand pool",
       "Per-application fine-tuned variants of the base Claude weights"
     ],
     "correctIndex": 0,
@@ -112,7 +112,7 @@
     "question": "A fresh AWS account has a perfect IAM policy and the right region, yet every Claude invocation on Bedrock is refused. A colleague insists IAM is all Bedrock checks. What are they missing?",
     "options": [
       "New accounts must age 30 days before Bedrock accepts any model traffic",
-      "Bedrock also requires the account to be linked to an Anthropic organization first",
+      "Bedrock also requires the AWS account to be linked to an Anthropic organization first, so Anthropic can approve the use case before AWS serves its weights",
       "Anthropic model access must first be enabled for the account in the Bedrock console — a one-time use-case submission that IAM cannot substitute for",
       "The IAM policy must be attached to the root user, not a role"
     ],
@@ -126,7 +126,7 @@
     "difficulty": 2,
     "question": "In a healthy cached session, the usage object shows `input_tokens: 2` on a call that clearly carried a 100k-token conversation. What does `input_tokens` actually count?",
     "options": [
-      "The tokens of the newest user message only",
+      "The tokens of the newest user message only — the single message appended since the last call, with everything older itemized elsewhere",
       "A sampling artifact — the field is unreliable during cache hits",
       "Only the uncached remainder after the last cache breakpoint; the rest is itemized under the cache read and write fields",
       "The total request size divided by the cache discount factor"
@@ -143,7 +143,7 @@
     "options": [
       "It doesn't — the TTL refreshes on every hit, so steady traffic keeps the entry alive indefinitely at no extra charge",
       "Five minutes after creation, regardless of traffic",
-      "It survives, but each refresh re-bills the prefix at the 1.25× write price",
+      "It survives the hour, but each two-minute hit re-bills the whole prefix at the 1.25× write price to fund the extension",
       "After 12 refreshes, the maximum allowed for the 5-minute tier"
     ],
     "correctIndex": 0,
@@ -156,7 +156,7 @@
     "difficulty": 3,
     "question": "You place a cache breakpoint after a prefix of about 500 tokens. What happens?",
     "options": [
-      "The request is rejected with a validation error about the breakpoint",
+      "The request is rejected with a 400 validation error naming the breakpoint, since prefixes must clear the per-model minimum up front",
       "The prefix is cached but reads back at a reduced discount",
       "The prefix is padded up to the minimum and cached normally",
       "Nothing is cached — prefixes below the per-model minimum (roughly 1,024–4,096 tokens) are silently billed as ordinary input"
@@ -171,7 +171,7 @@
     "difficulty": 3,
     "question": "Across a long session, every call's usage shows a small cache write (a few hundred to a few thousand tokens) and a huge cache read. What harness strategy produces that signature?",
     "options": [
-      "The server auto-caches whatever it predicts will recur; the writes are its incremental guesses",
+      "The server speculatively auto-caches whatever content it predicts will recur across calls; the small writes are its incremental guesses being stored",
       "A rolling breakpoint trailing the settled tail: each turn the newly settled chunk is written once, and everything before it is read back",
       "The whole prefix is rewritten each call; the columns just split it by TTL tier",
       "The harness caches only tool schemas, which change slightly every call"
@@ -187,7 +187,7 @@
     "question": "After moving your Bedrock deployment to a different AWS region, cache read and write counts sit at exactly zero on every call, though nothing else changed. What should you check first?",
     "options": [
       "Whether the new region supports prompt caching at all — support is per-region on Bedrock, and an unsupported region silently bills everything as ordinary input",
-      "Whether prompt caching was re-enabled for the account in the new region's Bedrock console",
+      "Whether prompt caching was re-enabled for the account in the new region's Bedrock console — like model access, it's a one-time opt-in that must be granted per region",
       "Whether the InvokeModel API supports cache markers, since only Converse does",
       "Whether the cache entries need time to replicate from the old region"
     ],
@@ -201,7 +201,7 @@
     "difficulty": 4,
     "question": "Your team's sessions have long think-time gaps and you want the 1-hour cache TTL. Which statement is correct from the Bedrock seat?",
     "options": [
-      "The harness already uses the 1-hour TTL everywhere by default, so there is nothing to configure",
+      "The harness already buys the 1-hour TTL on every write through every provider door — observed usage shows essentially all writes on that tier — so there is nothing to configure or opt into through the Bedrock door",
       "The 1-hour TTL writes at 1.25× and the 5-minute at 2×, so it's also the cheaper option",
       "On Bedrock the 1-hour TTL exists only for specific models and is an explicit opt-in (e.g. ENABLE_PROMPT_CACHING_1H=1); generally available on the direct API, it can't be assumed through the AWS door",
       "The provider selects the TTL server-side based on your observed traffic pattern"
@@ -218,7 +218,7 @@
     "options": [
       "Sessions with long breaks between turns, where entries would otherwise expire",
       "Steady traffic where calls never gap more than five minutes — refresh-on-hit keeps the 5-minute entry alive indefinitely, so the extra 0.75× per written token buys nothing",
-      "Sessions with very large stable prefixes, where the premium compounds fastest",
+      "Sessions with very large stable prefixes — at 200k tokens the extra 0.75× per written token compounds fastest, overwhelming whatever eviction savings the longer hold provides",
       "Any session on Bedrock, where 1-hour writes are billed at the 5-minute rate anyway"
     ],
     "correctIndex": 1,
@@ -231,7 +231,7 @@
     "difficulty": 2,
     "question": "During a heavy Bedrock session, occasional ThrottlingExceptions appear in the background but the session keeps making progress. What's happening?",
     "options": [
-      "Bedrock is queueing your requests server-side until quota frees up",
+      "Bedrock is queueing throttled requests server-side and replaying them in order as quota frees up, which is why progress continues without any client action",
       "The harness silently switched to a smaller model to duck under the quota",
       "AWS automatically raised your quota after the first throttle",
       "The AWS SDK and harness retry throttled calls with exponential backoff; transient throttling is absorbed, and only sustained throttling warrants a quota look"
@@ -247,7 +247,7 @@
     "question": "Your Bedrock TPM quota keeps running out even though the AWS bill looks modest and cache reads dominate your token mix. Which token class is actually draining the quota?",
     "options": [
       "Output tokens — they burn down TPM at a model-specific multiplier (5× for most Claude models, more for some), so a little generation consumes a lot of quota",
-      "Cache reads — they're the bulk of your tokens, so they're the bulk of your quota use",
+      "Cache reads — cheap on the bill at 0.1×, but they're the bulk of your tokens, so they're the bulk of what burns down the TPM bucket each minute",
       "Uncached input — it counts double against TPM to discourage cold prompts",
       "Cache writes — the 1.25×/2× billing premium applies to quota as well"
     ],
@@ -264,7 +264,7 @@
       "It doesn't — rate limits count tokens as sent, cached or not",
       "It helps only on Bedrock; Anthropic tiers count every input token equally",
       "Substantially: cache reads are excluded from the input-side accounting on both providers (Anthropic's ITPM for most models; Bedrock quota burndown), so effective throughput can be several times the printed limit",
-      "It helps only at the billing layer; throughput and billing use the same counters"
+      "It helps only at the billing layer, where reads bill at 0.1×; throughput accounting reuses the same counters on both providers, so every input token draws per-minute quota as sent, cached or not, exactly as it appears in the usage object"
     ],
     "correctIndex": 2,
     "explanation": "This is one of the few places the two providers agree in your favor. On the Anthropic API, `cache_read_input_tokens` don't count toward ITPM for most models — only uncached input and cache writes do. On Bedrock, cache reads consume no quota tokens at all. Since a healthy Claude Code session's input is overwhelmingly cache reads (the resend, discounted), your effective sustainable throughput can be several times what the printed per-minute limit suggests — and conversely, one broken cache converts that entire read volume into full-rate quota consumption, so a cache miss is a throttling event, not just a billing event. Option A describes how it would work without cache-aware metering. Options B and D each get one provider or one layer right and generalize wrongly: the exclusion holds on both providers, and throughput accounting is genuinely separate machinery from billing, which always charges reads at 0.1×."
@@ -279,7 +279,7 @@
       "Nothing — on both providers max_tokens only matters if generation reaches it",
       "Bedrock deducts input plus the full max_tokens from quota at request start (settling and refunding afterward), so an inflated cap throttles concurrent requests even when generation never comes close — invisible in the bill",
       "Bedrock bills the full max_tokens whether generated or not, so the cost impact is direct",
-      "Both providers reserve max_tokens against their output-token limits; Bedrock is merely stricter about it"
+      "Both providers reserve the full max_tokens at request start — Anthropic against OTPM, Bedrock against TPM — so the cap throttles equally everywhere; Bedrock is merely stricter about refunding the unused part after generation settles"
     ],
     "correctIndex": 1,
     "explanation": "Bedrock's quota accounting runs in three steps: at request start it deducts total input plus your entire `max_tokens` from the TPM bucket (throttling the request if that overdraws), adjusts during generation, then settles to actual usage — input, cache writes, and output at its burndown multiplier — refunding the unused reservation. The reservation is the trap: ten concurrent calls each reserving a huge cap can exhaust quota upfront and throttle each other, while the bill, which only ever records actual tokens, shows nothing unusual. Option A is the canonical provider-delta trap — it is essentially true on the Anthropic API, whose docs state `max_tokens` does not factor into OTPM, but false through your door. Option C errs the other way: billing is unaffected everywhere; this is purely quota machinery. Option D falsely symmetrizes the providers. On Bedrock, right-sizing `max_tokens` is a concurrency lever, not just tidiness."
@@ -323,7 +323,7 @@
     "options": [
       "Subagent traffic is billed at the cache-read rate as a delegation discount",
       "The 50k tokens stay in the subagent's context and die with it; only a short report joins the main conversation, so the investigation isn't resent on every subsequent main-thread turn",
-      "The subagent shares the parent's cached prefix, so its exploration reads at 0.1×",
+      "The subagent inherits the parent's cached prefix — same system prompt and tool schemas, so the prefix matches — and its entire exploration therefore reads back at the discounted 0.1× cache-read rate",
       "Subagent tokens draw on a separate quota pool, so they're effectively free capacity"
     ],
     "correctIndex": 1,
@@ -339,7 +339,7 @@
       "The cache is thrashing — reads should exceed the prior call's input many times over",
       "The model re-reading its own previous answer before composing the next one",
       "The resend itself, in the provider's own accounting: everything call n−1 shipped is shipped again by call n and served from cache",
-      "Proof that the conversation is stored server-side and re-read from the provider's copy each call"
+      "Proof that the conversation is stored server-side between calls and re-read from the provider's own copy each turn, sparing the client from resending it"
     ],
     "correctIndex": 2,
     "explanation": "Each call's request is the previous call's request plus the newest additions (the latest output and tool results). So when call n arrives, the portion matching call n−1's content — which was written to cache by then — comes back as cache reads, and the read count naturally tracks the prior call's total input. It's the stateless loop made visible in billing data: the provider's own meters confirming that the whole conversation crosses the wire every time. Option D draws the exact wrong conclusion from the right observation — reads measure what you resent and the server *didn't recompute*, not what it remembered; no conversation is stored, only ephemeral K/V state keyed to the prefix you must still supply. Option A inverts health signals: this steady correspondence is what a working cache looks like; thrashing looks like reads collapsing and writes spiking. Option B anthropomorphizes an accounting identity."
@@ -368,7 +368,7 @@
     "options": [
       "It conflates two ledgers: cache reads do consume zero quota on Bedrock, but they still bill at ~0.1× of base input on the AWS bill — quota-free is not billing-free",
       "The quota half is wrong too — cache reads burn down TPM at 5× like output",
-      "Nothing — Bedrock genuinely charges nothing for cache reads; only the direct API bills them",
+      "Nothing — Bedrock genuinely serves cache reads free on both ledgers; only the direct Anthropic API bills them at its 0.1× rate, one of Bedrock's real pricing advantages",
       "It's wrong only because Bedrock doesn't support prompt caching in the first place"
     ],
     "correctIndex": 0,
@@ -383,7 +383,7 @@
     "options": [
       "The model finished its thought but was close enough to the cap to flag it",
       "Decode was cut off at the requested cap — the output is truncated, possibly mid-sentence or mid-tool-call, and is not a natural ending",
-      "The remainder was held server-side and will be prepended to the next response",
+      "The remainder was generated but held server-side, and will be prepended automatically to the next response once you call again",
       "The conversation has filled the model's context window and must be compacted"
     ],
     "correctIndex": 1,
@@ -397,7 +397,7 @@
     "question": "Why do responses stream out token by token, while your prompt is never 'streamed in' the same way?",
     "options": [
       "Streaming reduces the billed token count by avoiding response buffering",
-      "It lets the server begin executing tool calls while the rest of the reply generates",
+      "It lets the server begin executing tool_use blocks the moment they stream out, overlapping tool latency with the rest of the reply's generation — the main latency win of the agentic loop",
       "Both directions could stream; SSE just happens to be response-only in HTTP",
       "The two phases are asymmetric: prefill ingests the whole prompt in one parallel pass, but decode produces output sequentially, one token per step — streaming ships each token as it exists"
     ],
@@ -411,7 +411,7 @@
     "difficulty": 4,
     "question": "Claude Code streams fine against the Anthropic API but hangs when the same traffic runs to Bedrock through a corporate gateway. Where does the classic failure sit?",
     "options": [
-      "Bedrock streams the Converse event schema, so the harness's Anthropic-format parser needs a translation layer the gateway must provide",
+      "Bedrock streams the Converse event schema — camelCase deltas, contentBlockDelta events — so the harness's Anthropic-format parser needs a translation layer the gateway must provide",
       "Bedrock cannot stream tool_use blocks, so agentic sessions must run non-streaming there",
       "Bedrock streaming uses AWS binary event-stream framing rather than SSE; a gateway that re-encodes the stream or rewrites its content-type breaks the harness's parsing",
       "Both providers emit identical SSE, so the gateway is innocent — the region is missing streaming support"

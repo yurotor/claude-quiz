@@ -21,7 +21,7 @@
     "difficulty": 2,
     "question": "You've written a PostToolUse formatting hook and want every teammate who clones the repository to get it automatically. Where does it go?",
     "options": [
-      "~/.claude/settings.json — the user-level settings file",
+      "~/.claude/settings.json — the user-level settings file, which applies across every project on your machine",
       ".claude/settings.local.json — the project settings file",
       ".claude/settings.json in the repo, checked into version control",
       "A \"hooks\" section in the project's CLAUDE.md"
@@ -38,7 +38,7 @@
     "options": [
       "Claude is prevented from stopping: the stderr text is fed back to it and it continues working — in this case, presumably running the tests",
       "The session terminates and the stderr message is displayed to the user as the failure reason",
-      "Nothing changes — Stop fires after the turn is already over, so exit 2 is advisory, like PostToolUse",
+      "Nothing changes — Stop fires after the final message has already been emitted, so exit 2 is purely advisory feedback, exactly like exit 2 on a PostToolUse hook after its tool has run",
       "The harness re-executes the last tool call so the hook can re-evaluate the session state"
     ],
     "correctIndex": 0,
@@ -51,7 +51,7 @@
     "difficulty": 3,
     "question": "A PreToolUse hook exits 0 and prints JSON with hookSpecificOutput.permissionDecision set to \"allow\" whenever the proposed command is \"npm test\". What is the effect?",
     "options": [
-      "The preference is recorded but advisory — the user still sees the permission prompt and decides",
+      "The preference is recorded as advisory input — the user still sees the permission prompt, with the hook's recommendation displayed alongside it, and makes the final call",
       "None — on exit 0, stdout goes only to the debug log, so the JSON is never read",
       "The command is added to the permanent allowlist in settings.json for future sessions",
       "The tool call is auto-approved and runs without a permission prompt — the hook is acting as a policy engine in front of the permission system"
@@ -69,7 +69,7 @@
       "A PreToolUse hook that rewrites the tool's input to add redaction flags before the command runs",
       "A PostToolUse hook that, via its JSON output, replaces the tool's result with a redacted version before it enters context",
       "A PostToolUse hook that exits 2, so its stderr is substituted for the tool's output",
-      "A UserPromptSubmit hook that scrubs secrets from the content being added to the next request"
+      "A UserPromptSubmit hook that scans the assembled request just before it is sent and scrubs secrets from any tool output already sitting in the conversation history"
     ],
     "correctIndex": 1,
     "explanation": "PostToolUse hooks can do more than observe: through the JSON channel, a hook can replace the tool's output entirely — the harness feeds the model the hook's substituted content instead of the raw result. Since the hook runs in the harness after execution but before the result is folded into the next request, redaction is guaranteed at the only seam that sees real output before the model does. Each trap is a real mechanism at the wrong point. PreToolUse input rewriting exists, but it edits what the tool is asked to do — it can't guarantee anything about what the output will contain. Exit 2 on PostToolUse feeds stderr to the model as advisory feedback; it does not replace the tool result, which still lands in context unredacted. UserPromptSubmit injects content at prompt time — the wrong direction entirely: it shapes what you add, not what tools returned. Only the output-replacement channel intercepts the actual payload."
@@ -84,7 +84,7 @@
       "Set user-invocable: false in the skill's frontmatter",
       "Delete the description field so the model has nothing to match against",
       "Set disable-model-invocation: true in the frontmatter — only you can trigger it, and its description drops out of the always-loaded listing",
-      "Move it to ~/.claude/commands/ so it becomes a command instead of a skill"
+      "Move it to ~/.claude/commands/, since files in the commands directory are user-invocable only and are never advertised to the model as triggers"
     ],
     "correctIndex": 2,
     "explanation": "By default a skill is invocable two ways: by you (/deploy) and by the model when the description matches the task. disable-model-invocation: true severs the second path — exactly what you want for side-effect workflows like deploying, committing, or messaging, where timing should be a human decision. It has a pleasant side effect: since the model can no longer invoke it, the description no longer needs to sit in the always-loaded listing, so the skill costs zero context until used. user-invocable: false is the mirror image — it makes the skill model-only and hides it from the / menu, the opposite of what's wanted. Deleting the description is a broken version of the right idea: it degrades the skill (no autocomplete documentation, unclear purpose) rather than using the switch built for this. And moving it to commands/ doesn't change the trigger model reliably — commands and skills are merged machinery; the frontmatter switch is the explicit control."
@@ -112,7 +112,7 @@
     "question": "A colleague says: \"Skills are fully lazy — once Claude finishes the task that triggered a skill, the body unloads and the context is freed again.\" What's the truth?",
     "options": [
       "They're right — the harness drops the body from context as soon as the invoking task completes",
-      "They're right in effect — the body is re-read from disk on each turn it's relevant and never stored in the conversation",
+      "They're right in effect — the harness re-reads the body from disk on each turn where the skill is still relevant and drops it from the request once the model stops referencing it, so nothing persists in the conversation",
       "They're wrong only for user-invoked skills; model-invoked skill bodies do unload after use",
       "They're wrong — once invoked, the rendered content enters the conversation as a message and persists for the rest of the session; the lazy part is loading, not lifetime"
     ],
@@ -128,7 +128,7 @@
     "options": [
       "The grant persists to session end, just like the skill's injected text does",
       "The grant has cleared — allowed-tools pre-approves tools only for the turn that invoked the skill; the skill's text persists, its permissions don't",
-      "The grant was written into settings.json as an allow rule and now applies to future sessions too",
+      "The grant was persisted to .claude/settings.local.json as an allow rule at invocation time, so it now applies for the rest of this session and to future sessions too",
       "The grant only ever applied inside a forked subagent context, never to the main conversation"
     ],
     "correctIndex": 1,
@@ -172,7 +172,7 @@
     "question": "You type \"/fix-issue 417\". By the time the request reaches the model, what does the model actually receive?",
     "options": [
       "The command template plus a separate arguments object it must combine",
-      "The command name as a special token the model resolves against its list of known commands",
+      "The command name as a structured invocation block that the model resolves against the list of registered commands the harness sends with every request",
       "Only the final expanded prompt, with 417 already substituted where $ARGUMENTS was — the model never sees the template",
       "The path to the command file, which the model reads with a tool call"
     ],
@@ -186,7 +186,7 @@
     "difficulty": 2,
     "question": "A query tool on one of your MCP servers can return enormous results. What stops a single call from flooding your context window?",
     "options": [
-      "The harness summarizes oversized results with an extra model call before adding them to context",
+      "The harness detects oversized results and spends one extra model call summarizing them down before folding the summary into the conversation as the tool result",
       "Claude Code caps MCP tool output — 25,000 tokens by default, with a warning threshold — raisable via MAX_MCP_OUTPUT_TOKENS",
       "Nothing — MCP results flow into context in full, so you must trust each server's restraint",
       "The MCP specification requires servers to paginate all responses to a fixed page size"
@@ -233,7 +233,7 @@
     "options": [
       "Remote servers can't be configured via JSON at all — only through claude mcp add",
       "The URL is missing the SSE endpoint path that remote servers must expose",
-      "The server hasn't been approved yet in the project trust prompt, so it's skipped until you accept it",
+      "The server hasn't been approved in the project trust prompt yet — hand-added remote servers bypass the claude mcp add approval flow, so the harness skips them until you accept via /mcp",
       "The entry lacks a transport declaration — without a \"type\", it's parsed as a stdio server, which expects a command, so the url-only entry is invalid"
     ],
     "correctIndex": 3,
@@ -261,7 +261,7 @@
     "difficulty": 4,
     "question": "Which of these statements about MCP transports in Claude Code is accurate?",
     "options": [
-      "SSE is the recommended transport for remote servers; HTTP is retained only for legacy compatibility",
+      "SSE remains the recommended transport for remote servers because it supports streaming responses; plain HTTP is retained only for legacy servers that can't hold connections open",
       "WebSocket servers are added with claude mcp add --transport ws and support the full OAuth flow",
       "In JSON config, \"streamable-http\" is accepted as an alias for the http transport, matching the MCP specification's own name for it",
       "stdio entries must declare \"type\": \"stdio\" explicitly, or the harness skips them with an error"
@@ -279,7 +279,7 @@
       "There are no built-in subagents — every agent type must be defined in .claude/agents/ first",
       "Explore — a read-only search agent that sweeps the codebase at a requested thoroughness and returns conclusions, not file dumps",
       "Plan — which researches the codebase and then executes the implementation plan it writes",
-      "Explore — which searches the codebase and can also apply small fixes it finds along the way"
+      "Explore — which sweeps the codebase read-mostly, but can also apply small single-file fixes it finds along the way, since trivial edits are pre-approved for built-in agents"
     ],
     "correctIndex": 1,
     "explanation": "Explore is the built-in read-only search agent: Claude delegates broad codebase questions to it, specifies how hard to look (quick, medium, or very thorough), and receives conclusions while all the intermediate file reading stays in the child's disposable context. Read-only is a load-bearing property, not a limitation — an agent that cannot edit can be granted wide freedom to roam without permission friction, which is what makes automatic delegation to it safe. That's why the \"can also apply small fixes\" variant is wrong: give Explore write access and every delegation becomes a risk decision. The Plan option breaks on its second half — Plan does read-only research during plan mode, keeping exploration out of the main window precisely while the conversation must stay non-mutating; executing plans is the main loop's job after you approve. And built-ins exist alongside custom definitions (general-purpose rounds out the set, with the full tool kit) — .claude/agents/ is for adding roles, not for bootstrapping the feature."
@@ -291,7 +291,7 @@
     "difficulty": 2,
     "question": "A subagent working on a delegated task wants to run a command that requires permission. What happens?",
     "options": [
-      "The parent agent evaluates the request and approves it on your behalf",
+      "The parent agent evaluates the request against your session's permission rules and approves or denies it on your behalf, so delegated work never interrupts you",
       "The subagent inherits auto-accept for everything, since delegation implied trust",
       "The command is silently denied — subagents can only use pre-approved tools",
       "The permission prompt surfaces in your main session, naming which subagent is asking — a child can't approve anything on your behalf"
@@ -322,7 +322,7 @@
     "question": "A subagent's final report is good but raises one follow-up question about what it found. What is the cheapest way to get the answer?",
     "options": [
       "Spawn a fresh subagent with the original task prompt plus the follow-up question appended",
-      "Have the parent pull the child's full transcript into its own context and read the answer directly",
+      "Have the parent pull the child's saved transcript from disk into its own context and read the answer directly out of the recorded tool results",
       "Send the follow-up to the same subagent — it can be resumed with its context intact, so it answers from work already done",
       "Redo the relevant part of the investigation inline in the main conversation"
     ],
@@ -351,7 +351,7 @@
     "difficulty": 3,
     "question": "The lead of an agent team spawns a teammate for a task. What does that teammate actually know when it starts?",
     "options": [
-      "The lead's full conversation history, streamed over as shared team context",
+      "The lead's full conversation history, streamed into the teammate's window at spawn time so the whole team reasons over one shared context",
       "A compacted summary of the lead's session, generated at spawn time",
       "Only its spawn prompt, in a bare context with no project configuration loaded",
       "Its spawn prompt plus whatever a fresh session loads — CLAUDE.md, MCP servers, skills — but nothing of the lead's conversation"
@@ -368,7 +368,7 @@
     "options": [
       "Debugging by competing hypotheses, where workers should actively try to disprove each other's theories as they investigate",
       "A broad read-only sweep of the codebase where only the conclusion needs to come back",
-      "A refactor that must proceed through strictly sequential steps, each building on the last",
+      "A refactor that must proceed through strictly sequential steps, where the shared task list lets each teammate claim the next step and build directly on the last one's output",
       "A large batch of edits concentrated in one shared file, parallelized for speed"
     ],
     "correctIndex": 0,
@@ -413,7 +413,7 @@
     "options": [
       "They're right — headless claude -p invocations run without the Agent tool, so no delegation can happen inside a stage",
       "They're right unless you build on the Agent SDK, which is the only integration point where scripted and model-driven orchestration can mix",
-      "They're wrong, because the script itself can call the model to make its gating decisions — which keeps the pipeline fully deterministic while adding judgment",
+      "They're wrong, because the script itself can call the model at each gate to decide whether to proceed — since the script owns control flow, routing gate decisions through a model call keeps the pipeline fully deterministic while adding judgment",
       "They're wrong — the strongest pattern is a deterministic skeleton with a dynamic interior: the script fixes stages and gates, while within each stage the model retains full agency, including spawning subagents as it sees fit"
     ],
     "correctIndex": 3,
