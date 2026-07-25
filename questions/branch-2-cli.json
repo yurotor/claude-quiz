@@ -1,0 +1,302 @@
+[
+  {
+    "id": "2.1-L1-01",
+    "topic": "2.1",
+    "topicName": "Slash commands",
+    "difficulty": 1,
+    "question": "In the middle of a Claude Code session you run `/clear`. What does it do?",
+    "options": [
+      "Deletes the project's CLAUDE.md file so Claude forgets the project instructions",
+      "Redraws the terminal screen but keeps the whole conversation intact",
+      "Wipes the current conversation context and starts you fresh in the same directory",
+      "Logs you out so you have to re-authenticate before the next prompt"
+    ],
+    "correctIndex": 2,
+    "explanation": "`/clear` resets the conversation: the next turn is assembled with none of the previous back-and-forth, as if you had just launched a new session in the same project. This matters because of the stateless loop — every turn resends the entire conversation to the API, so a long history means every new turn costs more and eats more of the context window. `/clear` is the cheapest way to drop that baggage when you switch tasks. It does not touch files on disk (CLAUDE.md survives, and the old transcript is still saved and resumable), which is why the CLAUDE.md option is wrong. Redrawing the screen is a different action (Ctrl+L), and authentication is unrelated — especially on Bedrock, where auth comes from AWS credentials, not a session login."
+  },
+  {
+    "id": "2.1-L1-02",
+    "topic": "2.1",
+    "topicName": "Slash commands",
+    "difficulty": 1,
+    "question": "You want to switch to a different Claude model for the rest of your current session. Which slash command do you use?",
+    "options": [
+      "/model",
+      "/config",
+      "/switch",
+      "/init"
+    ],
+    "correctIndex": 0,
+    "explanation": "`/model` changes which model the harness will call for subsequent turns of the current session. Because the loop is stateless — the harness resends the whole conversation on every turn — switching models mid-session simply means the next resend goes to a different model; nothing that already happened is re-run. `/config` opens general settings and can set a default, but `/model` is the direct in-session switch. `/switch` is not a real command, and `/init` does something entirely different (it generates a CLAUDE.md for the project). One Bedrock-flavored note: when running through Bedrock, the models you can pick must be ones enabled in your AWS account and region, and model identifiers there are Bedrock model IDs or inference profiles rather than plain Anthropic API names."
+  },
+  {
+    "id": "2.1-L2-01",
+    "topic": "2.1",
+    "topicName": "Slash commands",
+    "difficulty": 2,
+    "question": "A teammate who runs Claude Code against AWS Bedrock asks why they've never needed `/login`. What's the accurate answer?",
+    "options": [
+      "Bedrock users authenticate through /login too, but only once ever, so they forgot doing it",
+      "With CLAUDE_CODE_USE_BEDROCK set, auth comes from the standard AWS credential chain, so there's no Anthropic account login step",
+      "Claude Code disables all authentication when talking to Bedrock because AWS traffic is inside a VPC",
+      "/login is only required for the -p headless mode, which they apparently never use"
+    ],
+    "correctIndex": 1,
+    "explanation": "`/login` exists to connect Claude Code to an Anthropic account — either a Claude subscription via OAuth or a Console API key. When `CLAUDE_CODE_USE_BEDROCK` is set, requests go to AWS instead, and they're signed with whatever the standard AWS credential chain provides: environment variables, an AWS profile, an IAM role, SSO, etc. There is simply no Anthropic-side account in the picture, so the login step doesn't apply. The 'only once' option is wrong because Bedrock users never run it at all. The VPC option confuses network topology with authentication — Bedrock requests are still authenticated, just with AWS SigV4 credentials rather than an Anthropic token. And `/login` has nothing to do with `-p`; headless and interactive modes use the same auth resolution."
+  },
+  {
+    "id": "2.1-L2-02",
+    "topic": "2.1",
+    "topicName": "Slash commands",
+    "difficulty": 2,
+    "question": "What is the key difference between `/compact` and `/clear`?",
+    "options": [
+      "/compact deletes old transcript files from disk, while /clear only hides them from view",
+      "/clear summarizes the conversation into a shorter form; /compact throws it away entirely",
+      "/compact is automatic-only and cannot be invoked manually, unlike /clear",
+      "/compact replaces the conversation with a summary so work can continue with context; /clear drops the conversation entirely"
+    ],
+    "correctIndex": 3,
+    "explanation": "Both commands attack the same problem — the resend grows every turn, so a long conversation gets expensive and eventually hits the context window. `/compact` asks the model to summarize the conversation so far, then continues with that summary (plus a recent tail) in place of the full history: you keep working memory of the task at a fraction of the tokens. `/clear` is the blunt version: it discards the conversation entirely, keeping nothing. Note that compaction itself costs a full read of the conversation, since the model must ingest everything to summarize it. The second option has the two commands reversed. Neither touches transcript files on disk — the session record survives both. And compaction runs automatically near the context limit, but `/compact` exists precisely so you can trigger it manually at a moment you choose."
+  },
+  {
+    "id": "2.2-L1-01",
+    "topic": "2.2",
+    "topicName": "Modes",
+    "difficulty": 1,
+    "question": "What is plan mode in Claude Code for?",
+    "options": [
+      "Having Claude research the task and propose an approach before it is allowed to change anything",
+      "Scheduling a session to run later at a planned time",
+      "Making Claude respond faster by planning several turns in advance",
+      "Splitting the work across multiple parallel agents according to a plan"
+    ],
+    "correctIndex": 0,
+    "explanation": "Plan mode restricts Claude to read-only exploration: it can search, read files, and reason, but it can't edit files or run state-changing commands. Instead it produces a plan for you to review; only after you approve does it proceed to execute. The mechanism is a permission mode — the harness withholds approval for mutating tools, which is why this is enforced reliably rather than being a polite request in the prompt. It's the right mode when the change is risky or ambiguous and you want to sanity-check the approach before any file is touched. The distractors misread the word 'plan': there's no scheduling feature by that name, no multi-turn lookahead for speed, and while multi-agent workflows exist, plan mode itself is about gating execution behind your approval, not about parallelism."
+  },
+  {
+    "id": "2.2-L1-02",
+    "topic": "2.2",
+    "topicName": "Modes",
+    "difficulty": 1,
+    "question": "You switch Claude Code into auto-accept (acceptEdits) mode. What changes compared to the default mode?",
+    "options": [
+      "Claude stops asking for your confirmation on anything, including arbitrary shell commands",
+      "Claude automatically accepts your prompts without you pressing Enter",
+      "File edits are applied without a permission prompt each time, instead of asking you to approve each one",
+      "Claude switches to a faster model to keep up with the accepted edits"
+    ],
+    "correctIndex": 2,
+    "explanation": "In the default mode, the harness pauses before each file edit (and other gated actions) and asks you to approve. acceptEdits mode pre-approves file edits specifically, so Claude can write and modify files without stopping — useful when you trust the direction and don't want to click through dozens of small changes. Crucially, it is not a blanket 'yes to everything': commands and other tools that would normally prompt can still prompt. That's the difference from bypassPermissions, which the first option is describing. The permission check happens in the harness, on your machine, before the tool runs — the model itself never executes anything; it only emits tool-use requests that the harness decides to honor. Mode changes never affect which model is used or how your input is submitted."
+  },
+  {
+    "id": "2.2-L2-01",
+    "topic": "2.2",
+    "topicName": "Modes",
+    "difficulty": 2,
+    "question": "Which set correctly names Claude Code's core permission modes?",
+    "options": [
+      "readonly, readwrite, admin, root",
+      "default, acceptEdits, plan, bypassPermissions",
+      "safe, balanced, fast, unrestricted",
+      "manual, assisted, supervised, autonomous"
+    ],
+    "correctIndex": 1,
+    "explanation": "The core permission modes are `default` (prompt for approval on gated actions), `acceptEdits` (file edits pre-approved), `plan` (read-only research, propose before acting), and `bypassPermissions` (no prompts at all — for isolated or throwaway environments only). You cycle through available modes with Shift+Tab in the interactive UI, and can start a session in a given mode with the `--permission-mode` flag or set it in settings.json. The mode names matter beyond trivia because they appear verbatim in configuration. The other option sets are invented vocabularies: they sound like plausible product tiers but match nothing in the harness. Note what a permission mode actually is: a policy applied by the harness on your machine when the model requests a tool — it changes nothing about the API request itself, so it works identically on Bedrock and on the Anthropic API."
+  },
+  {
+    "id": "2.2-L2-02",
+    "topic": "2.2",
+    "topicName": "Modes",
+    "difficulty": 2,
+    "question": "What distinguishes bypassPermissions mode from acceptEdits mode?",
+    "options": [
+      "bypassPermissions is set per-project while acceptEdits is set per-user",
+      "acceptEdits also auto-approves shell commands; bypassPermissions only covers edits",
+      "They behave identically; bypassPermissions is just the legacy name for acceptEdits",
+      "acceptEdits auto-approves file edits only, while bypassPermissions skips permission prompting entirely, including for shell commands"
+    ],
+    "correctIndex": 3,
+    "explanation": "acceptEdits removes the prompt for one category — file edits — while everything else still goes through the normal permission flow. bypassPermissions removes the prompting layer altogether: any tool the model requests, including arbitrary Bash commands, runs without asking. That's why it's paired with the deliberately scary `--dangerously-skip-permissions` flag and is meant for sandboxed or disposable environments (like CI containers), not for a session on your workstation with real credentials lying around. The second option inverts the two modes. They are certainly not aliases — the whole point of having both is the difference in blast radius. And either mode can be set for a session regardless of where settings live; the modes themselves aren't tied to user-vs-project scoping. Remember the model only ever emits tool-use requests; permission modes decide how much of that the harness honors without you in the loop."
+  },
+  {
+    "id": "2.3-L1-01",
+    "topic": "2.3",
+    "topicName": "Keyboard shortcuts",
+    "difficulty": 1,
+    "question": "Claude is midway through a long response and heading in the wrong direction. Which key stops it so you can redirect?",
+    "options": [
+      "Esc",
+      "Ctrl+Z",
+      "Ctrl+D",
+      "F5"
+    ],
+    "correctIndex": 0,
+    "explanation": "Esc interrupts Claude mid-turn: the current response or tool call stops, but the work completed so far in the session is kept, and you can immediately type a correction. This is the everyday steering tool — interrupting early is far cheaper than letting a wrong approach run to completion, because every subsequent turn resends the whole (now longer) conversation. The others do different things: Ctrl+Z suspends the entire Claude Code process to your shell (Unix job control — you'd run `fg` to come back), Ctrl+D exits the session, and F5 isn't bound. Worth knowing the neighbors too: Ctrl+C clears the input or exits, and double-Esc on an empty prompt opens the rewind menu to restore an earlier point in the session rather than just stopping the current one."
+  },
+  {
+    "id": "2.3-L1-02",
+    "topic": "2.3",
+    "topicName": "Keyboard shortcuts",
+    "difficulty": 1,
+    "question": "Which keyboard shortcut cycles between permission modes (default → acceptEdits → plan …) during an interactive session?",
+    "options": [
+      "Ctrl+P",
+      "Tab",
+      "Shift+Tab",
+      "Ctrl+M"
+    ],
+    "correctIndex": 2,
+    "explanation": "Shift+Tab cycles through the permission modes available in your session — default (shown as 'Manual' in the mode indicator), acceptEdits, plan, and any extra modes you've enabled. It's the fastest way to hop into plan mode before a risky request or into auto-accept for a long mechanical refactor, without touching configuration files. The distractors are all real-feeling but wrong: plain Tab is used for completions and accepting suggestions, Ctrl+P moves through command history (like the Up arrow), and Ctrl+M isn't a mode toggle. A useful mental separation: shortcuts like this only change harness-side behavior — what the harness will auto-approve — and have zero effect on the API request itself, so the model doesn't 'know' which mode you're in except through what the harness tells it (for example, the constraints of plan mode)."
+  },
+  {
+    "id": "2.3-L2-01",
+    "topic": "2.3",
+    "topicName": "Keyboard shortcuts",
+    "difficulty": 2,
+    "question": "You type `!git status` at the Claude Code prompt. What happens?",
+    "options": [
+      "Claude is asked to run `git status` and must first request permission for the Bash tool",
+      "The input is rejected because `!` is reserved for history expansion",
+      "Claude Code opens a persistent subshell that replaces the session until you type exit",
+      "The command runs directly in your shell, and its output is added to the session so Claude can see it"
+    ],
+    "correctIndex": 3,
+    "explanation": "The `!` prefix enters shell mode: the command executes immediately on your machine without going through the model at all, and both the command and its output are appended to the session context. That last part is the trick worth knowing — because the harness resends the whole conversation each turn, the output becomes visible to Claude on your next prompt, so `!` is a fast way to feed it fresh ground truth (test results, git state) without asking it to run the command itself. The first option describes the normal, non-prefixed path where the model chooses to call Bash and the permission system gets involved; `!` skips both the model and the prompt since you ran it yourself. History expansion with `!` is disabled by default, and there's no session-replacing subshell — each `!` line is one command."
+  },
+  {
+    "id": "2.3-L2-02",
+    "topic": "2.3",
+    "topicName": "Keyboard shortcuts",
+    "difficulty": 2,
+    "question": "You want to write a multi-line prompt in Claude Code, and it must work in any terminal without extra configuration. Which input inserts a newline instead of submitting?",
+    "options": [
+      "Shift+Enter, which is guaranteed native in every terminal",
+      "Typing a backslash and then pressing Enter",
+      "Ctrl+Enter, the universal newline binding",
+      "Pressing Enter twice quickly"
+    ],
+    "correctIndex": 1,
+    "explanation": "The backslash-then-Enter 'quick escape' works in all terminals with no setup (Ctrl+J is the other universally available option). The reason terminal support even matters: many terminals send Shift+Enter as a plain Enter, so Claude Code can't distinguish them without help. Shift+Enter does work natively in a good list of modern terminals (iTerm2, Ghostty, Kitty, Windows Terminal, and others), but in environments like the VS Code integrated terminal you first run `/terminal-setup` to install the binding — so 'guaranteed everywhere' is exactly what it isn't. Option+Enter is another route on macOS but requires configuring Option as Meta. Ctrl+Enter isn't the binding, and double-Enter would just submit your first line. This is worth knowing cold, because a submitted half-prompt still becomes a full turn — resent conversation, real tokens, real cost."
+  },
+  {
+    "id": "2.4-L2-01",
+    "topic": "2.4",
+    "topicName": "Useful built-in skills & commands",
+    "difficulty": 2,
+    "question": "You run `/init` in a repository that Claude Code has never seen. What does it do?",
+    "options": [
+      "Explores the codebase and generates a CLAUDE.md file documenting the project for future sessions",
+      "Runs `git init` and creates an initial commit on your behalf",
+      "Creates the ~/.claude directory and default global settings.json",
+      "Registers the project with your Anthropic account so usage is billed to it"
+    ],
+    "correctIndex": 0,
+    "explanation": "`/init` has Claude explore the repository — build commands, structure, conventions — and write what it learns into a CLAUDE.md at the project root. The payoff comes from how CLAUDE.md is used afterward: the harness injects it into the prompt of every future session in that project, so it's the durable memory layer in an otherwise stateless system. Nothing lives server-side between sessions; a file the harness re-reads and resends is how 'the project's knowledge' persists. It is unrelated to `git init` — Claude Code doesn't initialize repositories as part of `/init` — and `~/.claude/` global scaffolding is created by the CLI itself, not this command. The billing option doesn't correspond to anything real; and for a Bedrock user there's no Anthropic account registration in the picture at all — usage lands on the AWS bill."
+  },
+  {
+    "id": "2.4-L2-02",
+    "topic": "2.4",
+    "topicName": "Useful built-in skills & commands",
+    "difficulty": 2,
+    "question": "What does the built-in `/review` command do?",
+    "options": [
+      "Replays the current session's transcript so you can review what Claude did",
+      "Shows a diff of every file Claude has modified since the session started",
+      "Has Claude review a pull request and give feedback on the changes",
+      "Audits your settings.json and permission rules for risky configuration"
+    ],
+    "correctIndex": 2,
+    "explanation": "`/review` points Claude at a pull request: it fetches the PR's changes (typically via the `gh` CLI), reads the diff in context, and produces review feedback — the kind of task that plays to an agent's strength of reading many files to judge one change. It's a packaged workflow: you could prompt the same thing by hand, but the command bundles the steps. The distractors each map to a different real surface, which is what makes them tempting: reviewing what Claude did in-session is the transcript view (Ctrl+O), file changes are visible through git itself since Claude edits your working tree directly, and configuration checks are territory for `/doctor` and `/permissions`, not `/review`. Provider-wise this is fully neutral — the review runs through whatever model endpoint you've configured, Bedrock or Anthropic, since the command is just harness-side orchestration."
+  },
+  {
+    "id": "2.4-L2-03",
+    "topic": "2.4",
+    "topicName": "Useful built-in skills & commands",
+    "difficulty": 2,
+    "question": "What is the key operational difference between a skill and a slash command in Claude Code?",
+    "options": [
+      "Skills run locally in the harness while slash commands are executed by the API server",
+      "Slash commands are built-in only, whereas skills are the only way users can add custom behavior",
+      "Skills can call tools but slash commands cannot",
+      "A slash command is invoked explicitly by the user; a skill can be triggered by the model when its description matches the task"
+    ],
+    "correctIndex": 3,
+    "explanation": "The distinction is who pulls the trigger. A slash command fires only when you type it — deterministic, user-driven. A skill advertises itself via a short description that sits in the model's context; when the model judges that the current task matches, it loads the skill's full instructions and follows them. That's why writing a good skill description matters so much: it's the trigger condition. The mechanism also explains the cost profile — descriptions are always carried in the resent context, bodies only on activation. The first option misplaces the machinery: both are harness-side; the API server executes nothing (a useful invariant on Bedrock and Anthropic alike). The second is false because custom slash commands are fully supported alongside skills. And both paths can lead to tool use — a command's prompt or a skill's instructions can each have Claude invoke tools."
+  },
+  {
+    "id": "2.4-L2-04",
+    "topic": "2.4",
+    "topicName": "Useful built-in skills & commands",
+    "difficulty": 2,
+    "question": "You want Claude to permanently remember a project convention ('we use tabs, never spaces') across all future sessions. What's the supported way?",
+    "options": [
+      "Tell Claude once in a session; the model updates its weights with your preference",
+      "Add it to the project's CLAUDE.md, for example via the /memory command",
+      "Set it as an environment variable so the API includes it in every request",
+      "Enable the conversation-sync option so future sessions download past chats"
+    ],
+    "correctIndex": 1,
+    "explanation": "Persistent memory in Claude Code is a file. CLAUDE.md (project-level, or user-level in ~/.claude/ for personal preferences) is read by the harness and injected into the prompt at the start of every session — that's the entire mechanism. `/memory` opens these files for editing so you don't have to hunt for them. The first option is the classic misconception this topic exists to kill: model weights are frozen; nothing you say in a session trains the model, and the API keeps no state between requests — every turn is a full resend of what the harness chose to include. Environment variables configure the harness (model choice, Bedrock routing) but their values aren't injected as instructions into prompts. And there is no conversation-sync feature; past transcripts exist locally and can be resumed, but new sessions don't automatically inherit old conversations — CLAUDE.md is the designed channel for durable knowledge."
+  },
+  {
+    "id": "2.5-L2-01",
+    "topic": "2.5",
+    "topicName": "Invocation & flags",
+    "difficulty": 2,
+    "question": "What does running `claude -p \"summarize the failing tests\"` do differently from just running `claude`?",
+    "options": [
+      "It runs headless: processes the single prompt, prints the result to stdout, and exits instead of opening the interactive UI",
+      "It runs the prompt in plan mode, printing a proposed plan for approval",
+      "It runs the prompt with elevated permissions, skipping all confirmation prompts",
+      "It pipes the prompt to the most recently used session and reattaches to it"
+    ],
+    "correctIndex": 0,
+    "explanation": "`-p` (`--print`) is headless mode: Claude Code takes the prompt from the command line, runs the full agentic loop — including tool calls — non-interactively, writes the final result to stdout, and exits. That makes it composable in shells and CI: pipe input in, capture output, chain with `--output-format json` for machine-readable results. The full harness machinery still applies (same context assembly, same permission rules — which is why CI usage often pairs it with explicit `--allowedTools`). The 'p' tempts people toward 'plan', but plan mode is a permission mode (`--permission-mode plan`), not this flag. It doesn't elevate permissions — that misconception would make `-p` dangerous, and it's the separate, deliberately verbose `--dangerously-skip-permissions` flag. And it starts a fresh conversation unless you explicitly combine it with `--continue` or `--resume`."
+  },
+  {
+    "id": "2.5-L2-02",
+    "topic": "2.5",
+    "topicName": "Invocation & flags",
+    "difficulty": 2,
+    "question": "What is the difference between `claude --continue` and `claude --resume`?",
+    "options": [
+      "--continue reopens a crashed session; --resume reopens one you exited cleanly",
+      "--continue keeps the conversation but resets permissions; --resume keeps both",
+      "--continue loads the most recent conversation in the current directory; --resume lets you pick a specific past session by ID, name, or from a picker",
+      "They are aliases; --resume is simply the long form of --continue"
+    ],
+    "correctIndex": 2,
+    "explanation": "`--continue` (`-c`) is the zero-decision path: it reopens the most recent conversation for the directory you're in. `--resume` (`-r`) is the targeted path: give it a session ID or name, or run it bare to get an interactive picker of past sessions. Both work because every session's conversation is persisted locally as a transcript (JSONL under ~/.claude/) — resuming means the harness reloads that record and resends it as the conversation history on your next turn. Nothing was ever stored server-side, so 'resuming' is purely a local-file operation; this is the stateless loop again, and it behaves identically on Bedrock and the Anthropic API. They aren't aliases, the clean-vs-crashed distinction doesn't exist (either can reopen either), and neither flag touches permission state — permissions re-resolve from your settings whenever a session starts."
+  },
+  {
+    "id": "2.5-L2-03",
+    "topic": "2.5",
+    "topicName": "Invocation & flags",
+    "difficulty": 2,
+    "question": "What does setting the environment variable CLAUDE_CODE_USE_BEDROCK=1 actually change?",
+    "options": [
+      "It downloads Claude model weights so the CLI can run them inside your AWS account",
+      "The harness routes its model API calls to Amazon Bedrock, authenticated via your AWS credentials, instead of the Anthropic API",
+      "It switches the CLI binary to a special AWS build with different commands",
+      "It enables AWS-specific tools like an S3 browser inside the session"
+    ],
+    "correctIndex": 1,
+    "explanation": "The flag changes one thing: the destination and signing of API requests. With it set, the same harness sends its (Anthropic-shaped) requests to the Bedrock endpoint in your configured AWS region, signed with credentials from the standard AWS chain — env vars, a profile, an IAM role. Everything above that layer is untouched: same CLI, same slash commands, same tools, same permission system, and the same Claude model weights answering — Bedrock is a different door to the same model, hosted by AWS. That's why the weights-download option is wrong twice over: no weights ever leave the provider, on either path. There's no separate AWS build of the CLI, and no bonus AWS tools appear in the session. Practical corollaries: `/login` becomes irrelevant, model selection uses Bedrock model IDs or inference profiles, and cost shows up on the AWS bill rather than an Anthropic console."
+  },
+  {
+    "id": "2.5-L2-04",
+    "topic": "2.5",
+    "topicName": "Invocation & flags",
+    "difficulty": 2,
+    "question": "You're scripting Claude Code in CI with `claude -p` and want machine-readable output. Which values does `--output-format` accept?",
+    "options": [
+      "yaml, json, and xml",
+      "plain, rich, and raw",
+      "markdown, html, and json",
+      "text, json, and stream-json"
+    ],
+    "correctIndex": 3,
+    "explanation": "`--output-format` in print mode accepts `text` (the default final answer as plain text), `json` (a single structured result including metadata like cost and session ID — the one you usually want in CI, parsed with something like jq), and `stream-json` (newline-delimited JSON events emitted as the run progresses, useful for observing the loop live: each tool call and message appears as its own event). The stream variant is a window into the agentic loop itself — you can watch the turn-by-turn tool round-trips that are normally rendered as UI. The other option sets are plausible-sounding format families that the flag doesn't offer; markdown is how Claude tends to write text, not an output-format value. This is provider-neutral: output formatting happens entirely in the harness after responses come back, so it works identically whether the endpoint behind it is Bedrock or the Anthropic API."
+  }
+]

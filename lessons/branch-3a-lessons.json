@@ -1,0 +1,101 @@
+{
+  "3.1": {
+    "title": "Prompt assembly",
+    "intro": "The model is stateless, so every turn the harness must build the entire request from scratch and send all of it. Prompt assembly is that build — and it is an act of selection against a budget, not a dump of everything on disk.",
+    "sections": [
+      {
+        "heading": "The layered build",
+        "body": "Everything the model sees lands in exactly one of three destinations in the API request. First the `tools` parameter: every tool definition — name, description, input schema. Second the `system` parameter: the system prompt (a few thousand tokens), with environment info and your `CLAUDE.md` memory riding at or near it. Note that `system` is a separate top-level field, not a message. Third the `messages` array: the entire prior conversation, tool results, harness-injected reminders, and — last of all — the thing you just typed.\n\nThis build happens on every single model call, not once per session. A single prompt from you can trigger dozens of tool-use round-trips, and each one re-assembles and re-sends the whole thing. Identical mechanics on Bedrock and the Anthropic API: the harness assembles the same Anthropic-shaped request either way; only the door it goes through differs."
+      },
+      {
+        "heading": "The stability gradient",
+        "body": "Why that order — tools, then system, then messages? Because prompt caching matches a prefix, from the first byte of the request forward. The assembly is therefore arranged as a stability gradient: the most stable content first, the most volatile last. Tool schemas rarely change mid-session; the system prompt and `CLAUDE.md` change occasionally; the message array grows every turn.\n\nWith stable content up front, the long unchanging head is a cache hit on every call, billed at roughly 0.1x instead of 1x. Put anything volatile early — a timestamp in the system prompt, a tool list that reorders — and you invalidate everything after it, re-billing the whole prefix as a cache write at 1.25x. The ordering is not an API convention; it is load-bearing cost engineering. In real sessions, cache reads routinely cover over 90% of all input tokens — that discount is what makes the full resend economically survivable."
+      },
+      {
+        "heading": "Injection is selection, not a dump",
+        "body": "The naive model — \"the harness concatenates system + tools + memory + history and ships it\" — misses a step: curation. Some content is always present (the system prompt, tool schemas, `CLAUDE.md`, skill names and descriptions). Other content is pulled in per turn, conditionally: a skill body loads only when its description matches what you're doing; `system-reminder` blocks appear around your messages carrying harness state; plugin selectors can match several candidate skills against your prompt and inject only some of them.\n\nAssembly runs against a token budget, and candidates that don't make the cut are dropped before the request is built. So what the model sees genuinely changes turn to turn — and there is a second-order cost: a busy, dynamic context is not just bigger, it is less cacheable, because anything that changes the stable head moves the cache boundary earlier and re-bills the prefix behind it."
+      },
+      {
+        "heading": "The transcript is not the message array",
+        "body": "It is tempting to think the session file at `~/.claude/projects/<slug>/<id>.jsonl` is the conversation the harness sends. It isn't. The transcript is a superset: alongside `user` and `assistant` records it interleaves a dozen other record types — mode switches, permission changes, queued prompts, file-history snapshots, auto-generated titles. UI and harness state share the tape with the conversation.\n\nEach turn, the harness reads that tape, selects a subset to become the message array, then adds things that were never on the tape at all — injected reminders marked as meta content, authored by the harness rather than by you or the model. Durable record and assembled request are two different objects. This is why resuming a session is a reconstruction, not a restore: the harness replays the transcript but re-assembles the request now, with today's date, the current tool list, and fresh reminders — not byte-identical to what a live session would have sent."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Manage Claude's memory", "url": "https://docs.claude.com/en/docs/claude-code/memory" },
+      { "label": "Claude Docs — Prompt caching", "url": "https://docs.claude.com/en/docs/build-with-claude/prompt-caching" }
+    ]
+  },
+  "3.2": {
+    "title": "The tool protocol",
+    "intro": "The model cannot do anything — it can only ask. A tool call is structured text sent out, matched by an id, and answered on the next request. Everything that actually touches your machine is the harness.",
+    "sections": [
+      {
+        "heading": "The round-trip: tool_use out, tool_result back",
+        "body": "When Claude \"reads a file,\" no file is read by the model. The model emits a `tool_use` content block — an `id`, a tool `name`, and a JSON `input` — and then its turn ends. There is no callback, no open socket, no waiting on I/O. The harness parses that block, executes the tool locally, and starts a fresh, longer request in which the answer rides as a `tool_result` block carrying the same id as `tool_use_id`.\n\nThree details do all the work. The id is the entire correlation mechanism — the model may emit several `tool_use` blocks in one reply (parallel calls), and only the echoed id says which result answers which request. The result comes back as a `user` message — there is no dedicated tool role in this protocol. And the pairing is an invariant: every `tool_use` must be answered by a matching `tool_result` on the next request, or the API rejects the conversation as malformed. On disk you can verify the counts match exactly."
+      },
+      {
+        "heading": "System tools vs custom and MCP tools",
+        "body": "Who defines the schema, and who executes? For built-in tools (`Read`, `Bash`, `Edit`, and friends), the harness defines the schema and the harness executes. For MCP tools, an external server defines the schema — the harness discovers it at startup, forwards it into the `tools` parameter, and when the model calls the tool, the harness relays the call to the server process, which executes and returns the result.\n\nTwo constants hold across all of them. From the model's perspective there is no difference: every tool is just an entry in the `tools` parameter and every call is the same `tool_use`/`tool_result` round-trip. And execution is always client-side — the model and the API server never run anything; the executor is either the harness process or a server the harness talks to. That also means every tool definition costs input tokens on every call whether or not it is ever used, which is why the harness can defer rarely-used MCP schemas until searched for."
+      },
+      {
+        "heading": "Why prompt injection is a protocol category, not a bug",
+        "body": "Put two protocol facts together. First: tool output re-enters the conversation as a `user` message — the same role your instructions arrive in. Second: the model reads the message array as one undifferentiated stream and cannot tell which user-role bytes you typed and which a `Read` pulled off disk or a fetch pulled off the web.\n\nSo a file, web page, or command output that contains instructions is structurally indistinguishable from you issuing those instructions. That is prompt injection, and it is not an implementation hole — it is a direct consequence of the protocol having one input channel. When a colleague asks \"why can't the model just ignore instructions inside a file it read?\", the answer is not \"better training\": the file's contents and your prompt occupy the same role in the same array, and there is no line for the model to hold. Mitigations therefore live in the harness — permission prompts, sandboxing, not piping untrusted text into an agent with broad tool access — never in a channel distinction the protocol does not have."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Docs — Tool use overview", "url": "https://docs.claude.com/en/docs/agents-and-tools/tool-use/overview" }
+    ]
+  },
+  "3.3": {
+    "title": "The special local files",
+    "intro": "All durable state in Claude Code lives on your disk — the model holds none, and the server holds only an ephemeral cache. These files are what the harness reads each turn to reconstruct the request, so knowing what lives where tells you what the model can and cannot see.",
+    "sections": [
+      {
+        "heading": "CLAUDE.md and rules: additive, request-shaping",
+        "body": "`CLAUDE.md` is memory the model actually receives: it lands in the system layer of the request and is re-injected on every call, which is also why it survives compaction. It exists at several scopes — user-level at `~/.claude/CLAUDE.md`, project-level at the repo root, and per-directory files deeper in the tree.\n\nThe resolution rule is the one people get wrong: scopes do not override each other, they stack. Asking \"which CLAUDE.md wins?\" is a category error — global, project, and subdirectory files are all concatenated into context at once, so a project file adds to your personal preferences rather than replacing them. That additive merge is the opposite of how `settings.json` resolves. The practical consequence: every line in every in-scope CLAUDE.md is paid for on every request of every session, so these files reward being short, specific, and genuinely universal — anything situational belongs in a skill body that loads on demand instead."
+      },
+      {
+        "heading": "settings.json tiers and precedence",
+        "body": "Settings resolve the opposite way: by precedence, highest layer wins. The chain, from strongest to weakest: managed/enterprise policy, then CLI arguments, then the project's local file (`.claude/settings.local.json` — personal, meant to be gitignored), then the shared project file (`.claude/settings.json` — committed for the team), then the user-global `~/.claude/settings.json`.\n\nFor overlapping scalar keys — model choice, environment variables, output style — the higher layer simply discards the lower. Permissions inside these files are the exception: allow/deny rules combine across layers safety-first, with a deny anywhere beating an allow anywhere. And critically, `settings.json` is harness-shaping configuration: it governs the loop — which model to call, what to permit, which hooks to run — but its contents never cross the wire. Putting coding rules in `settings.json` and wondering why Claude ignores them is the classic confusion: the model never receives that file. Rules the model must act on belong in `CLAUDE.md`."
+      },
+      {
+        "heading": "The ~/.claude inventory: durable vs ephemeral",
+        "body": "State lives in three tiers. Durable: your disk. Reconstructed: the message array, rebuilt in memory each turn from durable sources and thrown away. Ephemeral: the server-side prompt cache, TTL-evicted and never yours to inspect. Only the first tier is on disk to inventory.\n\nUnder `~/.claude/`: `projects/` holds session transcripts (typically the bulk of the space) plus subagent and plugin logs; `skills/` and `plugins/` hold extension code; `file-history/` holds the edit snapshots backing rewind/undo; plus `todos/`, `shell-snapshots/`, `commands/`, and `settings.json`. Beside the directory — not in it — sits `~/.claude.json`, holding global state and, for Anthropic-direct users, OAuth tokens (Bedrock users authenticate via AWS credentials instead, so no Anthropic token lives there). Two things worth saying out loud: it is all plaintext — anything you pasted into a session sits there in the clear — and it is mostly log, an append-only record the harness reads from, not \"memory the model can use.\" Retention is governed by `cleanupPeriodDays` (default 30) but is uneven across stores; if you need to know what is still on disk, look."
+      },
+      {
+        "heading": "The transcript *.jsonl and resume mechanics",
+        "body": "Each session appends to `~/.claude/projects/<project-slug>/<session-id>.jsonl`, one JSON record per line. Only a fraction of the record types are conversation (`user`, `assistant`); the rest interleave harness and UI state — mode changes, permission-mode changes, queued prompts, file-history snapshots, generated titles. Every assistant record also carries the API's own `usage` accounting — input tokens, cache reads, cache writes, output — which is how you can audit the stateless resend from your own disk: cache reads on call n roughly equal total input on call n-1.\n\n`--continue` reopens the most recent session for the project; `--resume` lets you pick one. Both are reconstructions, not restores: the harness replays the durable transcript to rebuild the message array, then assembles a fresh request with the current date, tool list, and reminders. That is one reason a long-idle resume takes a cache miss — the server cache has expired and the rebuilt prefix no longer matches. Last caveat: the JSONL schema is undocumented and changes between versions, so treat any specific field layout as observed, not guaranteed."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Manage Claude's memory", "url": "https://docs.claude.com/en/docs/claude-code/memory" },
+      { "label": "Claude Code docs — Settings", "url": "https://docs.claude.com/en/docs/claude-code/settings" }
+    ]
+  },
+  "3.4": {
+    "title": "Configuration surfaces",
+    "intro": "Every configuration surface answers two independent questions: resolution — when several layers set it, which wins — and landing — does it change the request the model sees, or only how the harness behaves. Hold both axes and most \"why is Claude ignoring my config?\" mysteries dissolve.",
+    "sections": [
+      {
+        "heading": "Axis 1 — Resolution: three rules, not one",
+        "body": "There is no single precedence rule; different surfaces resolve differently, and mixing them up is a real bug source. Override: `settings.json` scalars (model, env, output style) follow the precedence chain — managed policy beats CLI args beats local project settings beats shared project settings beats user-global — and the winning layer discards the rest. Additive: `CLAUDE.md`, skills, and MCP servers do not compete across scopes; global, project, and directory contributions all concatenate into context at once. Deny-wins: permissions combine safety-first — a deny at any layer beats an allow at any other, regardless of which layer is \"higher.\"\n\nSo \"which CLAUDE.md wins?\" is a category error (they stack), \"which permission wins?\" has a fixed answer (the deny), and \"which model applies?\" follows precedence. Three surfaces, three resolution rules — diagnose config by first asking which rule the surface uses."
+      },
+      {
+        "heading": "Axis 2 — Landing: request vs harness",
+        "body": "The load-bearing axis. Request-shaping config lands in the payload the model receives: `CLAUDE.md` (system layer), MCP tool definitions (`tools` parameter), skill names and descriptions (bodies only on invoke), output-style and system-prompt appends. It costs tokens on every call and its churn can move the cache boundary. Harness-shaping config governs the loop and never crosses the wire: model selection, permission rules, hooks, retention settings, UI preferences.\n\nThe test: if the model must see it to act on it, it is request-shaping; if it governs what the harness does, it is harness-shaping — and harness config is invisible to the model, so no wording makes the model \"obey\" a setting it never receives. This predicts both classic confusions at once: rules in `settings.json` get ignored because they never reach the model, and an idle MCP server still costs tokens because its schemas land in every request. A hook costs zero context; a skill description costs some on every call."
+      },
+      {
+        "heading": "Env vars, settings files, and flags",
+        "body": "The same key can often be set three ways, differing in lifetime and precedence. Settings files are durable defaults, resolved by the precedence chain. CLI flags (`--model`, `-p`, `--resume`) apply to one invocation and sit above the settings files in the chain. Environment variables are per-process: they come from your shell, and settings files can also pin them via their `env` block so every session sees them.\n\nOn the landing axis, almost all env vars and flags are harness-shaping — they steer which endpoint, model, and behavior the harness uses, not what the model reads. Remember also that settings are durable config that shape the reconstructed request; they are not themselves in it. The request is rebuilt each turn according to them: edit a settings file or `CLAUDE.md` mid-session and the effect appears when the harness next re-resolves that surface, not by any message to the model."
+      },
+      {
+        "heading": "The Bedrock delta: config is env-var heavy",
+        "body": "On the Anthropic API you `/login` once and most configuration can live in settings files. On Bedrock, the provider switch itself is environment configuration: `CLAUDE_CODE_USE_BEDROCK=1` tells the harness to sign requests with AWS credentials (from your standard AWS credential chain — profiles, SSO, IAM roles) instead of an Anthropic key, and region selection comes from your AWS environment. There is no `/login` step; auth is whatever your AWS environment provides.\n\nModel selection shifts too: instead of short Anthropic model names, you point at Bedrock model IDs or inference profiles, typically via environment variables such as `ANTHROPIC_MODEL`. A team standardizing on Bedrock usually pins all of this in the `env` block of a checked-in `.claude/settings.json`, so the provider wiring rides the same precedence chain as everything else. The crucial invariant: all of this is harness-shaping. The assembled request — tools, system, messages — is identical either way; Bedrock is a different door to the same model, and every mechanism in topics 3.1–3.3 applies unchanged."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Settings", "url": "https://docs.claude.com/en/docs/claude-code/settings" },
+      { "label": "Claude Code docs — Claude Code on Amazon Bedrock", "url": "https://docs.claude.com/en/docs/claude-code/amazon-bedrock" }
+    ]
+  }
+}

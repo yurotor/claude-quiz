@@ -1,0 +1,422 @@
+[
+  {
+    "id": "4.1-L2-01",
+    "topic": "4.1",
+    "topicName": "Hooks",
+    "difficulty": 2,
+    "question": "You want your linter to run after every file edit Claude Code makes, with zero chance of it ever being skipped. What is the most reliable mechanism?",
+    "options": [
+      "Add \"always run the linter after editing files\" to the project CLAUDE.md",
+      "Remind Claude at the start of every session to lint after each edit",
+      "Configure a PostToolUse hook matching Edit|Write in settings.json that runs the linter",
+      "Create a skill whose description says it should be used after file edits"
+    ],
+    "correctIndex": 2,
+    "explanation": "A hook is a shell command the harness itself executes when a named loop event fires — here, PostToolUse after an Edit or Write. Because it runs in the harness process, not in the model, it is deterministic: it fires every time, regardless of what the model is paying attention to. CLAUDE.md instructions and session reminders are 'asking nicely' — they land in the prompt and the model usually complies, but compliance is probabilistic and degrades as context fills. A skill is also model-triggered: the model must choose to invoke it. This is the core hooks-vs-instructions distinction: if a behavior must be guaranteed, put it in the harness (a hook); if it only needs to usually happen, prompt-level instructions are fine and cheaper to maintain."
+  },
+  {
+    "id": "4.1-L2-02",
+    "topic": "4.1",
+    "topicName": "Hooks",
+    "difficulty": 2,
+    "question": "Where does a Claude Code hook actually execute when its event fires?",
+    "options": [
+      "In the harness process on your machine, as a shell command it spawns",
+      "Inside the model, as special high-priority instructions",
+      "On the provider's servers (Anthropic or AWS Bedrock), alongside the model",
+      "In a separate subagent loop with its own context window"
+    ],
+    "correctIndex": 0,
+    "explanation": "Hooks are harness-side machinery. When a lifecycle event fires (PreToolUse, PostToolUse, UserPromptSubmit, Stop, SessionStart…), the harness runs your configured command locally, feeding it JSON about the event on stdin. No tokens are sent to the model for this, and nothing about hooks depends on the provider — they behave identically on Bedrock and the Anthropic API, because they never leave your machine. The 'inside the model' option is the classic confusion between the two halves of the system: the model only ever sees text the harness chooses to send; it has no notion of hooks. And a hook is not a subagent — it is a plain process, not another agent loop. This locality is exactly why hooks are deterministic where prompt instructions are not."
+  },
+  {
+    "id": "4.1-L3-01",
+    "topic": "4.1",
+    "topicName": "Hooks",
+    "difficulty": 3,
+    "question": "A PreToolUse hook script inspects a proposed Bash command and exits with code 2. What happens next?",
+    "options": [
+      "The tool call runs anyway; the exit code is only recorded in the debug log",
+      "The tool call is blocked and the hook's stderr is fed back to the model as the error, so it can adjust its approach",
+      "The whole session terminates immediately with an error",
+      "The harness retries the hook until it exits 0, then runs the tool"
+    ],
+    "correctIndex": 1,
+    "explanation": "Exit code 2 is the documented blocking signal. For PreToolUse it short-circuits the loop: the tool never executes, and whatever the hook wrote to stderr is returned to the model in place of a tool result. On the next request the model sees that rejection text and typically tries a different approach — the hook has steered the loop without consuming any context of its own until that moment. Exit 0 means success (stdout parsed for optional JSON decisions), and other non-zero codes are non-blocking errors surfaced to the user, not the model. Note the asymmetry with PostToolUse: exiting 2 there still shows stderr to the model, but cannot un-run a tool that already executed. Blocking is only possible at 'pre' seams."
+  },
+  {
+    "id": "4.1-L3-02",
+    "topic": "4.1",
+    "topicName": "Hooks",
+    "difficulty": 3,
+    "question": "A colleague claims: \"Our settings.json has a dozen hooks now — that's a dozen scripts' worth of extra tokens bloating every request.\" What's wrong with that?",
+    "options": [
+      "Nothing — every configured hook's script is embedded in the system prompt each turn",
+      "The claim is wrong because hooks run on Anthropic's servers, so they bloat server load, not the request",
+      "The claim is wrong because hooks consume output tokens, which are cheaper than input tokens",
+      "Hooks are harness-side callbacks that cost zero context by default; only output a hook explicitly injects (e.g. UserPromptSubmit stdout) ever lands in the request"
+    ],
+    "correctIndex": 3,
+    "explanation": "Hook configuration and hook scripts never enter the prompt. The harness reads settings.json itself, fires the matching commands at loop events, and the model is unaware any of it exists. That is what makes hooks the cheap intervention point: you can observe or block every tool call without paying a single token. The only way a hook touches the request is when it deliberately produces content the harness injects — for example, stdout from a UserPromptSubmit hook, or stderr from a blocking exit-2 that becomes the tool's rejection message. Compare that with skills, whose descriptions do sit in context every turn. The 'server-side' distractor confuses hooks with server tools; hooks run locally, identically under Bedrock or the Anthropic API."
+  },
+  {
+    "id": "4.1-L4-01",
+    "topic": "4.1",
+    "topicName": "Hooks",
+    "difficulty": 4,
+    "question": "For most hook events, stdout from a successful (exit 0) hook goes to logs, not to the model. Which event is the notable exception, whose stdout is added to the model's context — making it a per-turn context-injection mechanism?",
+    "options": [
+      "UserPromptSubmit",
+      "PostToolUse",
+      "Notification",
+      "PreCompact"
+    ],
+    "correctIndex": 0,
+    "explanation": "On exit 0, stdout from a UserPromptSubmit hook (and similarly SessionStart) is appended to the context the model receives, whereas for events like PostToolUse, Notification, or PreCompact, stdout stays in the debug log. That makes UserPromptSubmit the sanctioned way to inject fresh, computed context every turn — current branch, ticket state, environment facts — without asking the model to fetch it. It also resolves a neat category question: hooks execute harness-side, yet this one produces request-shaping content. Hooks are the bridge that turns loop events into payload. Mechanically it fits the stateless loop: the model only knows what's in the assembled request, so anything you want it to reliably 'know' each turn must be injected at assembly — and this event fires exactly there, before the prompt is processed."
+  },
+  {
+    "id": "4.2-L2-01",
+    "topic": "4.2",
+    "topicName": "Skills",
+    "difficulty": 2,
+    "question": "What determines whether Claude Code triggers a skill on its own in the middle of a task?",
+    "options": [
+      "The harness scans the skill's body for keywords matching the user's request",
+      "The skill's frontmatter description, which is always present in context — the model matches the task against it and chooses to invoke",
+      "The skill's file name must appear verbatim in the user's message",
+      "The harness runs a vector-similarity search over all installed skills each turn"
+    ],
+    "correctIndex": 1,
+    "explanation": "Skill triggering is a model decision, not a harness lookup. Every installed skill contributes its name and description to the assembled prompt on every turn; the body stays on disk. When the model judges that the current task matches a description, it invokes the skill, and only then does the harness load the body into context. This is why the description is the entire trigger surface: the model cannot be persuaded by brilliant instructions it hasn't loaded yet. There is no keyword scan, filename match, or embedding search in the harness — the 'retrieval' is just the model reading descriptions like any other prompt text. Consequences follow directly: vague descriptions cause missed or spurious triggering, and descriptions (unlike hook scripts) do cost a small amount of context per turn."
+  },
+  {
+    "id": "4.2-L2-02",
+    "topic": "4.2",
+    "topicName": "Skills",
+    "difficulty": 2,
+    "question": "What is the key difference between a skill and a custom slash command in Claude Code?",
+    "options": [
+      "Skills execute in the harness process, while commands execute inside the model",
+      "Commands can take arguments, while skills cannot receive any input",
+      "Skills are built into the product, while only commands can be user-defined",
+      "A command runs only when the user explicitly invokes it, while a skill can also be chosen by the model because its description sits in context"
+    ],
+    "correctIndex": 3,
+    "explanation": "Both are ultimately instructions injected into the conversation — neither 'executes' anywhere except as text the model acts on. The real difference is who pulls the trigger. A slash command is user-initiated: you type /name, the harness expands the file into a prompt, done. A skill adds a second trigger path: its description is always in context, so the model can decide mid-task that the skill applies and invoke it without you asking. Skills are also structurally richer — a directory with SKILL.md frontmatter plus optional supporting files, loaded progressively — where a command is typically a single markdown file. The argument distractor is wrong in both directions: commands take $ARGUMENTS, and skills can receive arguments too. Both can be user-defined at user or project scope."
+  },
+  {
+    "id": "4.2-L3-01",
+    "topic": "4.2",
+    "topicName": "Skills",
+    "difficulty": 3,
+    "question": "You have 40 skills installed. On a turn where none of them is used, what do they cost in context?",
+    "options": [
+      "Nothing — skills are loaded only when triggered, so unused skills are free",
+      "Their full bodies, since the model must read a skill to decide whether to use it",
+      "Only their names and descriptions, which are part of the assembled prompt every turn; bodies load on invocation",
+      "A one-time cost at session start that the cache then makes permanently free"
+    ],
+    "correctIndex": 2,
+    "explanation": "This is progressive disclosure, the skill system's cost model. Descriptions are the always-paid part: they must be in every request so the model can choose among skills, and 40 of them is a real, recurring slice of your context window. Bodies are the pay-on-use part, loaded only when a skill is invoked. So 'unused skills are free' is wrong (descriptions aren't free), and 'full bodies every turn' is wrong (that's exactly what the design avoids). The caching option is half-true and that's the trap: because descriptions sit in the stable prefix, they're usually cache reads (~0.1× input price on both Anthropic and Bedrock), which makes them cheap in dollars — but cache reads still occupy context-window space and still get reprocessed into attention state. Cheap is not free, and window budget is separate from price."
+  },
+  {
+    "id": "4.2-L3-02",
+    "topic": "4.2",
+    "topicName": "Skills",
+    "difficulty": 3,
+    "question": "Your team's skill contains excellent step-by-step instructions, but Claude Code almost never triggers it automatically. What is the most likely effective fix?",
+    "options": [
+      "Rewrite the frontmatter description to explicitly name the tasks and phrasings it should trigger on — the description is all the model sees before invoking",
+      "Move the most important instructions to the top of the skill body",
+      "Convert the skill into a PreToolUse hook so the harness enforces it",
+      "Switch to a larger model, which reads skill bodies more thoroughly"
+    ],
+    "correctIndex": 0,
+    "explanation": "Triggering happens before the body is ever loaded. On each turn the model sees only names and descriptions; if the description doesn't clearly announce 'use me when the user asks for X, Y, or Z,' the model has no basis to invoke it, no matter how good the body is. So triggering problems are description problems: name the concrete task types, include the phrases users actually type, state when NOT to use it. Reordering the body changes nothing pre-invocation — the body is invisible until the skill fires. A hook is the wrong seam: hooks fire deterministically on loop events, not on semantic task matches, and can't 'be' a workflow guide. And no model reads bodies before triggering, so model choice doesn't address the mechanism. Description-writing is effectively prompt engineering for a one-paragraph router."
+  },
+  {
+    "id": "4.3-L2-01",
+    "topic": "4.3",
+    "topicName": "Custom commands",
+    "difficulty": 2,
+    "question": "You create a file at .claude/commands/deploy.md inside a project. What does this give you?",
+    "options": [
+      "A hook that fires whenever a deployment-related tool call runs",
+      "A skill that Claude will trigger automatically when deployment comes up",
+      "A /deploy slash command whose markdown body is used as the prompt when invoked, available to anyone working in the repo",
+      "A background agent that watches the project for deploy events"
+    ],
+    "correctIndex": 2,
+    "explanation": "Files in a project's .claude/commands/ directory become project-scoped slash commands, named after the file: deploy.md yields /deploy. Because the directory lives in the repo, the command travels with version control — every teammate who clones the project gets it, which is the main reason to prefer project scope over the personal ~/.claude/commands/ equivalent. Mechanically, invoking the command just expands the markdown into the prompt for that turn (optionally with frontmatter like allowed-tools or model); it is request-shaping text, nothing more. It is not a hook — nothing fires automatically on events — and not a skill: the model won't spontaneously invoke /deploy because command bodies aren't advertised in context the way skill descriptions are. The user types it, or it doesn't run."
+  },
+  {
+    "id": "4.3-L2-02",
+    "topic": "4.3",
+    "topicName": "Custom commands",
+    "difficulty": 2,
+    "question": "You want a custom command invoked as \"/fix-issue 417\" to receive the issue number. How do arguments reach the command?",
+    "options": [
+      "They can't — custom commands are fixed prompts with no parameterization",
+      "You put $ARGUMENTS (or positional $1, $2…) placeholders in the command file; the harness substitutes them into the prompt before sending",
+      "You declare an args: list in the frontmatter and the harness parses flags automatically",
+      "The model infers the arguments from recent conversation history"
+    ],
+    "correctIndex": 1,
+    "explanation": "Command expansion is plain text substitution done by the harness at assembly time. $ARGUMENTS receives everything typed after the command name; $1, $2 and so on capture individual positional arguments when you want them separated. The substituted markdown then becomes the turn's prompt — by the time the request is sent, the model just sees ordinary text with '417' already inline. That's the right mental model: a command is a prompt template, not a program, so 'argument passing' is string interpolation, not flag parsing. There is no automatic frontmatter-driven parser (frontmatter fields like description, allowed-tools, and argument-hint configure the command, they don't parse input). And relying on the model to infer values from history is exactly the nondeterminism templates exist to remove."
+  },
+  {
+    "id": "4.3-L2-03",
+    "topic": "4.3",
+    "topicName": "Custom commands",
+    "difficulty": 2,
+    "question": "When is a custom slash command a better choice than a skill?",
+    "options": [
+      "When the model should discover and apply the behavior on its own during a task",
+      "When the workflow needs bundled helper scripts and reference files loaded progressively",
+      "When the behavior must deterministically block certain tool calls",
+      "When you want a short, reusable prompt that you fire explicitly at a moment you choose, with no need for the model to decide anything"
+    ],
+    "correctIndex": 3,
+    "explanation": "Choose by trigger and by structure. A command is the right tool when the human knows the moment: /review-pr, /deploy-checklist, /fix-issue 417. It costs nothing in context until typed, needs no trigger-worthy description, and its behavior is fully predictable — type it, the template expands. A skill earns its keep when the model should recognize the situation itself (its description is advertised every turn precisely for that) or when the workflow is big enough to want progressive disclosure and bundled resources — which is option B's scenario, a skill strength, not a command strength. Option C describes hooks: only harness-side code can deterministically block tool calls; neither commands nor skills can guarantee anything, since both just add instructions. The one-line heuristic: user-initiated and simple → command; model-initiated or resource-heavy → skill; must-always-happen → hook."
+  },
+  {
+    "id": "4.4-L2-01",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 2,
+    "question": "The model emits a tool_use for mcp__github__create_pr. Where does that tool actually execute?",
+    "options": [
+      "In the harness itself, like Bash or Read — all tools run locally",
+      "In an external MCP server process (local or remote) that the harness routes the call to — a third executor alongside built-in and server-side tools",
+      "On the model provider's servers, in-request, like web_search",
+      "Inside the model, which simulates the tool from its training data"
+    ],
+    "correctIndex": 1,
+    "explanation": "There are three executors behind one protocol. Built-in tools (Bash, Read, Edit) run in the harness on your machine. Server-side tools (like web_search) run on the provider's infrastructure inside the request. MCP adds the third: an external server — a local process or a remote endpoint — that the harness forwards the tool_use to, then wraps the reply as a tool_result. Crucially, the model can't tell them apart and doesn't need to: it emits a structured tool_use block and later receives a tool_result block; the routing is entirely the harness's job. The mcp__server__tool naming is the harness's routing key, not something the model executes. This is why prompt-injection risk extends to MCP results — whatever the server returns is fed straight back into the model's next context, same as any tool output."
+  },
+  {
+    "id": "4.4-L2-02",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 2,
+    "question": "You want everyone on your team to get the same MCP server configuration when they clone the repo. Which scope do you use, and where does it live?",
+    "options": [
+      "Project scope — a .mcp.json file at the repo root, checked into version control; teammates approve it on first use",
+      "Local scope — .claude/settings.local.json, which git automatically syncs",
+      "User scope — ~/.claude.json, which applies to all your projects",
+      "Enterprise scope — a shared file in the system-wide Claude directory"
+    ],
+    "correctIndex": 0,
+    "explanation": "MCP servers have three scopes, and the question 'who should get this?' picks between them. Project scope writes to .mcp.json in the repo root — the only scope designed for sharing, since the file rides along in version control; Claude Code asks each user to approve the servers on first use as a safety gate against a cloned repo silently wiring up executors. Local scope (the default for claude mcp add) is you-only and this-project-only, and — a common trip-up — it's stored in ~/.claude.json keyed by project path, not in settings.local.json. User scope is also in ~/.claude.json but loads across all your projects; it's personal, never shared. So the distractors fail on the sharing axis: local and user scopes never leave your machine, and settings.local.json is a settings file, not where MCP local scope lives."
+  },
+  {
+    "id": "4.4-L3-01",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 3,
+    "question": "You're wiring up two MCP servers: a hosted SaaS endpoint and a small script on your own machine. Which transport fits each?",
+    "options": [
+      "Both should use stdio; the harness tunnels it over the network for the remote one",
+      "The remote server uses stdio over SSH; the local one uses HTTP on localhost",
+      "The remote server uses HTTP (SSE is deprecated); the local one uses stdio — the harness spawns the process and speaks over stdin/stdout",
+      "The remote server uses gRPC; the local one uses a Unix socket"
+    ],
+    "correctIndex": 2,
+    "explanation": "Transport follows where the server lives. A stdio server is a child process the harness launches itself, exchanging JSON-RPC over stdin/stdout — ideal for local scripts and tools needing direct system access, and it dies with the session. A remote service can't be spawned, so you connect over the network: HTTP is the recommended transport (claude mcp add --transport http <name> <url>), with OAuth via /mcp or bearer headers for auth; SSE exists but is deprecated in favor of HTTP. The harness never 'tunnels stdio over the network,' and gRPC isn't part of MCP. One provider note for Bedrock users: transports are purely between your harness and the MCP server — your model traffic going to Bedrock changes nothing about how MCP servers connect."
+  },
+  {
+    "id": "4.4-L3-02",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 3,
+    "question": "A colleague on your Bedrock-based team says: \"We can't use MCP servers — MCP requires the Anthropic API and we route everything through AWS.\" What's the correct response?",
+    "options": [
+      "They're right — MCP tool calls are executed on Anthropic's servers, which Bedrock traffic never reaches",
+      "They're right in practice — Bedrock strips tool_use blocks from responses, so MCP tools never fire",
+      "They're half right — MCP works on Bedrock but only with stdio servers, not remote ones",
+      "They're wrong — MCP is harness-side and provider-agnostic; the model just emits tool_use, and the harness routes it to the server. Only if the MCP server itself calls an LLM does it need its own, separate credentials"
+    ],
+    "correctIndex": 3,
+    "explanation": "MCP lives entirely in the harness layer, below the provider question. Whether the completion comes from Bedrock or the Anthropic API, it arrives as the same Anthropic-shaped response with tool_use blocks; the harness sees mcp__server__tool, forwards the call to the configured server, and feeds the result back. Nothing in that path touches Anthropic's API, and Bedrock passes tool_use through untouched — tool use is core to the protocol on every provider. The one real caveat is the last clause: an MCP server is an independent program, and if it internally calls a model (say, a summarization server hitting the Anthropic API), it uses its own credentials and provider choice — your CLAUDE_CODE_USE_BEDROCK setting doesn't flow into it. Governance teams should vet that separately; the harness-to-server plumbing itself is provider-neutral."
+  },
+  {
+    "id": "4.4-L4-01",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 4,
+    "question": "Mid-session, you add an MCP server that contributes 30 tool schemas. Beyond the extra tokens those schemas occupy, what is the caching consequence on your next request?",
+    "options": [
+      "The tools parameter changes at the top of the request, so the cached prefix no longer matches — everything from that point on is re-written to cache at cache-write rates instead of read at ~0.1×",
+      "None — tool definitions sit outside the cacheable region of the request",
+      "Only the 30 new schemas are uncached; each existing block keeps its cache entry independently",
+      "The cache TTL resets, but all existing content is still served as cache reads"
+    ],
+    "correctIndex": 0,
+    "explanation": "Prompt caching is prefix matching: the provider reuses stored attention state only for a byte-identical leading span of the request. Tool definitions serialize near the very front — ahead of system prompt, context files, and history — precisely because they're normally the most stable content (the stability gradient). Add a server mid-session and that front section changes, so the prefix diverges almost immediately: the next turn re-ingests and re-caches nearly the whole conversation at cache-write pricing (e.g. 1.25× base input for 5-minute TTL) instead of ~0.1× reads. There's no per-block independence — a miss at position N invalidates everything after N. This applies on Bedrock exactly as on the Anthropic API. Practical rule: connect the MCP servers you need before long sessions; toggling them mid-flight buys one expensive turn each time."
+  },
+  {
+    "id": "4.4-L4-02",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 4,
+    "question": "With many MCP servers configured, Claude Code may list some tools as \"deferred,\" loadable via a tool-search mechanism. What problem does deferred tool loading solve, and how?",
+    "options": [
+      "It defers execution of MCP calls to the end of the turn so they can be batched into one request",
+      "Hundreds of full tool schemas would bloat the tools parameter of every request; deferring sends only names up front, and the model pulls in full schemas on demand via a search tool",
+      "It downloads tool implementations from the MCP server only when first called, saving disk space",
+      "It delegates deferred tools to the provider's servers so they execute without local round-trips"
+    ],
+    "correctIndex": 1,
+    "explanation": "Every request resends the full tools parameter, and MCP servers can contribute hundreds of verbose JSON schemas — paid on every single turn of a stateless loop, whether or not any of those tools are used. Deferred loading is progressive disclosure applied to tools, the same trick skills use for bodies: keep a lightweight name-level index always present, and let the model call a search tool (ToolSearch) to fetch full schemas only when it actually needs one. Once fetched, the schema is in context and the tool is callable normally. The gains compound: a smaller request per turn, and a more stable prefix for caching, since the always-present portion changes less. The distractors misplace the mechanism — nothing about execution timing, disk storage, or provider-side execution changes; deferral is purely about what schema text enters the assembled request, and when."
+  },
+  {
+    "id": "4.5-L2-01",
+    "topic": "4.5",
+    "topicName": "Subagents",
+    "difficulty": 2,
+    "question": "Claude Code spawns a subagent to investigate part of your task. What does that subagent see of your conversation so far?",
+    "options": [
+      "The full parent conversation history, shared in real time",
+      "An automatically compacted summary of the parent session",
+      "Nothing but the task prompt it was handed — it runs a separate loop with its own context window and system prompt",
+      "The last few parent messages, for continuity"
+    ],
+    "correctIndex": 2,
+    "explanation": "A subagent is not a thread within your conversation; it is a whole second agent loop. It gets its own system prompt, its own empty context window, and its own transcript, and the only bridge from the parent is the task prompt written into the Agent tool call. Nothing else crosses — not your history, not CLAUDE.md discussion, not files the parent already read. This isolation is the feature, not a limitation: the subagent can burn through dozens of file reads without any of it landing in the parent's context, and the parent receives only the final report. The practical corollary trips people up constantly: the delegating prompt must be self-contained. Any constraint, file path, or decision the subagent needs must be restated in that prompt, because 'as we discussed above' refers to a conversation the subagent has never seen."
+  },
+  {
+    "id": "4.5-L2-02",
+    "topic": "4.5",
+    "topicName": "Subagents",
+    "difficulty": 2,
+    "question": "How do you define a custom subagent type (say, a \"security-reviewer\") that's available in every session of a project?",
+    "options": [
+      "Add an \"agents\" array to the project's settings.json with the agent's prompt inline",
+      "Add a \"## security-reviewer\" section to CLAUDE.md describing the role",
+      "Configure an MCP server that registers itself as an agent",
+      "Create a markdown file in .claude/agents/ with frontmatter (name, description, optionally tools and model) whose body becomes the agent's system prompt"
+    ],
+    "correctIndex": 3,
+    "explanation": "Custom subagents are file-defined: a markdown file per agent in .claude/agents/ (project scope, shared via the repo) or ~/.claude/agents/ (personal, all projects). Frontmatter carries the identity — name, a description that tells the main agent when to delegate to it, an optional tools allowlist, and optionally a model tier — and the markdown body becomes the subagent's own system prompt, replacing what a generic agent would get. The description matters the same way a skill description does: it is what the delegating model reads when choosing an agent type. The distractors put the definition at the wrong seams — settings.json configures the harness but has no agents array for prompts; CLAUDE.md text is advisory memory, creating no invocable type; and MCP servers contribute tools, which are calls into an executor, not new agent loops."
+  },
+  {
+    "id": "4.5-L3-01",
+    "topic": "4.5",
+    "topicName": "Subagents",
+    "difficulty": 3,
+    "question": "A colleague says: \"I had a subagent read 50 files, so now the main conversation can reference any of those file contents.\" What actually happened?",
+    "options": [
+      "Only the subagent's final text report returned to the parent, as a single tool_result — results pass by value, and anything not in that report is gone from the parent's view",
+      "They're right — subagents write their findings into the parent's context as they work",
+      "The parent can retrieve the subagent's full transcript into context whenever it wants to check a detail",
+      "The file contents transferred, but compressed, so only approximate contents are available"
+    ],
+    "correctIndex": 0,
+    "explanation": "Subagent results are pass-by-value. The 50 files' contents lived in the subagent's context window, and when its loop finished, exactly one thing crossed back: its final message, wrapped as the tool_result of the Agent call. The parent's context grew by that summary — nothing else. There's no reference to dereference later: the parent's next request to the model contains the report text, not the subagent's transcript, and the stateless model only knows what's in the request. (The subagent's transcript does exist on disk, and the parent can message a still-alive agent to ask follow-ups — but that produces new report text, it doesn't import history.) The practical discipline: tell subagents what to include in their report — paths, line numbers, exact signatures — because whatever the report omits, the parent must rediscover from scratch."
+  },
+  {
+    "id": "4.5-L3-02",
+    "topic": "4.5",
+    "topicName": "Subagents",
+    "difficulty": 3,
+    "question": "Which of these tasks is the strongest candidate for delegating to a subagent rather than doing inline in the main conversation?",
+    "options": [
+      "Reading one known file to check a constant's value",
+      "A sweeping search across many candidate files and naming conventions, where you only need the conclusion",
+      "Making a small edit to the file you were just discussing",
+      "Asking the user a clarifying question about requirements"
+    ],
+    "correctIndex": 1,
+    "explanation": "The decision rule is: delegate when the work's intermediate output is bulky but its answer is small. A broad search means reading excerpts from dozens of files, most of them dead ends; done inline, every one of those dumps enters the parent's context and gets resent on every subsequent turn for the rest of the session — the stateless loop makes context pollution a recurring tax, not a one-time cost. Done in a subagent, the dead ends stay in the child's disposable context and the parent pays only for the conclusion. The other options invert the tradeoff: a single known-file read is cheaper than the overhead of spawning and briefing an agent; the small edit depends on conversation state a subagent doesn't have; and user interaction belongs to the main session. Isolation is the point — use it where isolation saves the most."
+  },
+  {
+    "id": "4.5-L4-01",
+    "topic": "4.5",
+    "topicName": "Subagents",
+    "difficulty": 4,
+    "question": "A colleague reasons: \"Subagents are nearly free — whatever they do, only a short summary comes back to us, so we're billed for a summary's worth of tokens.\" What's wrong with that?",
+    "options": [
+      "Nothing — providers bill subagent traffic at reduced background rates",
+      "It's wrong only for output tokens; subagent input tokens genuinely aren't billed",
+      "Subagents are actually more expensive per token because they can't use prompt caching",
+      "The subagent is its own stateless loop: every one of its turns resends its full growing history at normal rates. What you save is the parent's context growth, not the subagent's tokens"
+    ],
+    "correctIndex": 3,
+    "explanation": "The summary is what returns; it is not what you pay for. A subagent runs a complete agent loop — assemble, send, tool call, resend — and like any stateless loop, each of its turns retransmits everything before it, so a 30-turn investigation bills for its own superlinear resend curve at full input/output rates, on Bedrock or Anthropic alike. No provider discounts subagent traffic, and subagents do use prompt caching on their own prefixes, so both those distractors fail. What delegation genuinely buys is downstream: the parent's context grows by a summary instead of the full investigation, so every later parent turn resends kilobytes less — for the remaining life of the session. Subagents are a context-hygiene lever that often lowers total session cost, but each spawn is a real, fully-billed conversation. Fan out accordingly."
+  },
+  {
+    "id": "4.6-L3-01",
+    "topic": "4.6",
+    "topicName": "Agent teams & orchestration",
+    "difficulty": 3,
+    "question": "You fan a review task out to six parallel subagents instead of working through it in one session. What happens to your token consumption?",
+    "options": [
+      "Total tokens stay the same; they're just split six ways",
+      "Total tokens drop, since each agent has a smaller context than one big session would",
+      "It multiplies: six separate loops each resend their own growing context concurrently, so aggregate tokens — and especially tokens-per-minute — jump by roughly the fan-out factor",
+      "Only output tokens increase; input tokens are deduplicated across the agents"
+    ],
+    "correctIndex": 2,
+    "explanation": "Every agent in the fan-out is a full stateless loop: its own context, rebuilt and resent every turn. Six agents means six resend curves running at once, so your burst consumption — tokens per minute — scales with the fan-out even before totals settle. That rate dimension is the one people miss: sequential work spreads the same tokens over time; parallel work concentrates them, which is exactly what rate limits and quotas measure. On totals, 'split six ways' and 'deduplicated inputs' are wrong because contexts are independent — shared background (the codebase framing, the task brief) gets sent and cached separately per agent; caching is per-conversation-prefix, not cross-agent. The one grain of truth in option B: six short contexts can beat one giant session's late-stage resends on total cost. But the concurrency multiplier is the operative fact for anyone running against provider limits."
+  },
+  {
+    "id": "4.6-L3-02",
+    "topic": "4.6",
+    "topicName": "Agent teams & orchestration",
+    "difficulty": 3,
+    "question": "When running several agents in parallel on the same repository, why give each agent its own git worktree?",
+    "options": [
+      "So each agent gets an isolated working copy and branch state — parallel edits, builds, and test runs don't clobber a shared checkout, and each result can be reviewed or merged independently",
+      "So agents can't read each other's code, which is required for context isolation",
+      "Because a fresh worktree resets the prompt cache, making each agent's requests cheaper",
+      "Because the harness cannot run more than one agent in a single directory"
+    ],
+    "correctIndex": 0,
+    "explanation": "Subagent context isolation solves the conversation-level problem — histories don't mix — but the filesystem is still shared state. Two agents editing the same checkout will trample each other: conflicting edits to one file, a build reading a tree that's mutating mid-compile, tests failing on a colleague-agent's half-finished change. A git worktree gives each agent a separate directory with its own checked-out branch backed by the same repository, so edits are physically separated and each agent's output lands as a clean branch you can diff, review, or discard on its own. Note what worktrees are not: they're not a secrecy mechanism (context isolation happens at the conversation layer, and agents could read any path anyway), they have nothing to do with the prompt cache (that's keyed on request prefixes, not directories), and the harness happily runs many agents in one directory — that's precisely the hazard."
+  },
+  {
+    "id": "4.6-L4-01",
+    "topic": "4.6",
+    "topicName": "Agent teams & orchestration",
+    "difficulty": 4,
+    "question": "Your team runs Claude Code against AWS Bedrock. Soon after adopting a parallel multi-agent workflow, sessions start failing with throttling errors. What's the mechanism?",
+    "options": [
+      "Bedrock caps each AWS account at one model invocation at a time; parallel agents must be serialized",
+      "All agents draw on the same account-and-region on-demand quotas (tokens- and requests-per-minute); fan-out multiplies concurrent consumption, so you hit ThrottlingException far sooner than single-session use ever did",
+      "Each subagent requires its own IAM role, and role-assumption rate limits are being exceeded",
+      "MCP servers used by the agents are hitting Anthropic-side rate limits that surface as AWS throttling"
+    ],
+    "correctIndex": 1,
+    "explanation": "Bedrock on-demand capacity is metered per account per region as TPM/RPM quotas, and every agent in your fan-out spends from that one shared pool — the harness may see six independent conversations, but AWS sees one caller. Since each agent is a full loop resending its growing context, six agents multiply burst consumption roughly sixfold, and quota headroom that comfortably absorbed single sessions now produces ThrottlingException storms; the harness retries with backoff, so it often shows up first as agents mysteriously slowing down. There's no one-invocation cap, IAM roles don't multiply per subagent (all calls use the session's credentials), and MCP traffic never touches Bedrock's meters. Remedies map to the mechanism: cap parallelism, request quota increases, use cross-region inference profiles to widen the pool, or buy provisioned throughput. This is the fan-out cost multiplier expressed as a rate problem rather than a dollar problem."
+  },
+  {
+    "id": "4.7-L3-01",
+    "topic": "4.7",
+    "topicName": "Dynamic workflows",
+    "difficulty": 3,
+    "question": "You're building a nightly pipeline with fixed stages: triage failing tests → attempt fixes → run the suite → open a PR. Which construction fits best, and why?",
+    "options": [
+      "One interactive session with a long prompt instructing the model to perform all four stages in order",
+      "A single subagent given the entire pipeline as its task prompt",
+      "A script that drives each stage as its own headless invocation (claude -p) or subagent — deterministic code owns the sequencing and gating; each stage starts with a clean, focused context",
+      "Four skills, one per stage, and trust the model to trigger them in sequence"
+    ],
+    "correctIndex": 2,
+    "explanation": "The dividing line is whether the workflow's structure is known in advance. Here it is: four stages, fixed order, a clear gate (don't open a PR unless the suite passed). Structure you already know belongs in code — a script guarantees ordering and can enforce gates by checking real exit codes, where a prompted model merely tends to follow instructions and tends to degrade as one context fills with all four stages' debris. Per-stage invocations also mean each stage gets a small context containing only its own concern, instead of stage four wading through stage one's test dumps. The single-session and single-subagent options put probabilistic sequencing plus accumulated clutter inside one window; the skills option is worst on the load-bearing property, since skill triggering is itself a per-turn model judgment. Save model-driven delegation for work whose path can't be predetermined — that's where its adaptivity pays."
+  },
+  {
+    "id": "4.7-L4-01",
+    "topic": "4.7",
+    "topicName": "Dynamic workflows",
+    "difficulty": 4,
+    "question": "A colleague argues: \"Scripting workflows over subagents is pointless — one big session with everything in context is strictly better, because the model sees all the information at once.\" What's the strongest counter?",
+    "options": [
+      "Big sessions are impossible anyway, since the harness caps sessions at a fixed number of turns",
+      "They're right for the Anthropic API but wrong on Bedrock, where large contexts are unsupported",
+      "Subagent-based workflows are always cheaper in total tokens, which settles the question",
+      "\"Seeing everything\" is the liability: every turn resends the whole context at growing cost, instructions compete for attention amid the clutter, and compaction eventually discards detail lossily — decomposition gives each step a small fresh context and makes ordering deterministic"
+    ],
+    "correctIndex": 3,
+    "explanation": "The claim assumes context is free and attention is uniform; neither holds. Mechanically, the stateless loop resends everything each turn, so a monolithic session's cost curve bends superlinearly while a decomposed workflow keeps each step's resend short. Behaviorally, a window stuffed with four subtasks' file dumps dilutes the instructions that matter now — long-context recall is real but not perfect, and it competes with noise. And structurally, the big session can't actually keep everything: hit the window limit and compaction folds history into a lossy summary, discarding exactly the kind of detail the 'sees it all' argument depends on. Decomposition converts sequencing from a probabilistic behavior into code, and passes forward only distilled results. The honest caveat: for genuinely entangled work where every part informs every other, one context can win — but that's a judgment about the task's structure, not a universal rule. The other options lean on invented facts: no turn cap exists, Bedrock serves the same context windows, and decomposition isn't always cheaper."
+  }
+]

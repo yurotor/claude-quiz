@@ -1,0 +1,302 @@
+[
+  {
+    "id": "2.1-L1-03",
+    "topic": "2.1",
+    "topicName": "Slash commands",
+    "difficulty": 1,
+    "question": "You can't remember what commands are available in your Claude Code session. Which slash command lists them?",
+    "options": [
+      "/commands",
+      "/help",
+      "/list",
+      "/menu"
+    ],
+    "correctIndex": 1,
+    "explanation": "`/help` lists the available commands. There's also a shortcut into the same surface: simply typing `/` opens a menu of everything invocable — built-in commands, bundled and user-authored skills, and commands contributed by plugins or MCP servers — so in practice you often discover commands just by starting to type one. The other three options are invented names that sound plausible but don't exist. Worth noting where this all happens: anything starting with `/` is intercepted by the harness before prompt assembly, and a purely informational command like `/help` executes fixed local logic in the CLI process — no API call is made, no tokens are spent, and it behaves identically whether your session is pointed at Bedrock or the Anthropic API."
+  },
+  {
+    "id": "2.1-L1-04",
+    "topic": "2.1",
+    "topicName": "Slash commands",
+    "difficulty": 1,
+    "question": "You run Claude Code against AWS Bedrock and want a quick sanity check: which provider, region, and model did this session actually resolve? Which command shows that?",
+    "options": [
+      "/config",
+      "/context",
+      "/login",
+      "/status"
+    ],
+    "correctIndex": 3,
+    "explanation": "`/status` reports the session's vitals: version, working directory, active model, and — the part that matters most on Bedrock — which provider and region the session resolved, and where the region setting came from. Since Bedrock configuration is spread across environment variables, AWS profiles, and settings files, `/status` is the fastest way to confirm what actually won. The distractors each do something real but different: `/config` opens the settings interface for changing configuration rather than summarizing what resolved, `/context` visualizes how the context window is being spent per category, and `/login` manages sign-in to an Anthropic account — the one command a Bedrock user never needs, because auth there comes from the AWS credential chain, not a harness-held login."
+  },
+  {
+    "id": "2.1-L2-03",
+    "topic": "2.1",
+    "topicName": "Slash commands",
+    "difficulty": 2,
+    "question": "Your session feels heavy and you suspect something is eating the context window. Which command shows a breakdown of how the window is being spent — system prompt, tools, skills, messages?",
+    "options": [
+      "/context",
+      "/usage",
+      "/status",
+      "/doctor"
+    ],
+    "correctIndex": 0,
+    "explanation": "`/context` visualizes context-window consumption per category — system prompt, tool schemas, skill listings, conversation messages — which is exactly the view you need when a session feels heavy, because it shows what the harness is actually assembling and resending every turn. The tempting confusion is `/usage` (alias `/cost`): that reports token consumption over time, i.e. what you've spent, not how the window is currently allocated — a cumulative meter versus a snapshot of the payload. `/status` covers session vitals like model, provider, and region but not a per-category window breakdown, and `/doctor` is a setup health check (it does estimate what your skill listing costs in context, but it isn't the context visualizer). Remember why the breakdown matters: everything in that chart rides along in every subsequent request."
+  },
+  {
+    "id": "2.1-L2-04",
+    "topic": "2.1",
+    "topicName": "Slash commands",
+    "difficulty": 2,
+    "question": "Claude went down a bad path several turns ago, making edits along the way. What does `/rewind` do?",
+    "options": [
+      "Reverts the single most recent file edit but keeps the conversation as-is",
+      "Replays the conversation from the beginning, re-executing each tool call",
+      "Restores both your code and the conversation to an earlier checkpoint you select",
+      "Deletes your last message from the transcript while leaving all file changes in place"
+    ],
+    "correctIndex": 2,
+    "explanation": "`/rewind` (also reachable via double-`Esc` on an empty prompt) rolls the session back to a checkpoint — and it restores both halves of the state: the conversation the harness will resend next turn, and the code changes made since that point. That pairing is the whole value: if it only trimmed the message array, your working tree would still contain the bad edits, and if it only reverted files, Claude's context would still 'believe' the edits exist and act on that. The one-edit-undo and delete-last-message options describe narrower operations than what rewind does, and nothing replays or re-executes tool calls — in a stateless loop there is no server-side session to fast-forward; the harness simply reconstructs an earlier local state and resumes resending from there."
+  },
+  {
+    "id": "2.2-L1-03",
+    "topic": "2.2",
+    "topicName": "Modes",
+    "difficulty": 1,
+    "question": "In the default permission mode (shown as 'Manual'), what happens when Claude wants to read a file versus edit a file?",
+    "options": [
+      "Reads run without asking; edits and non-read-only commands prompt for your approval",
+      "Both reads and edits prompt for approval every single time",
+      "Both reads and edits run without asking; only shell commands prompt",
+      "Nothing runs at all until you approve a written plan"
+    ],
+    "correctIndex": 0,
+    "explanation": "Default mode draws the line at mutation: read-only actions (reading files, searching) run freely, while file edits and non-read-only commands pause for a permission prompt. That's the sensible baseline — reads can't damage anything, so prompting for them would only add friction, while every state-changing action gets a human check. The prompt-for-everything option overstates it, and the reads-and-edits-free option describes something closer to acceptEdits, where edits are pre-approved. The plan-first option describes plan mode, a different mode entirely. The underlying mechanism is worth internalizing early: the model only ever emits tool-use requests as structured text; the harness on your machine decides whether to execute each one, and the permission mode is simply the policy applied at that decision point."
+  },
+  {
+    "id": "2.2-L1-04",
+    "topic": "2.2",
+    "topicName": "Modes",
+    "difficulty": 1,
+    "question": "Mid-session, how can you tell which permission mode is currently active?",
+    "options": [
+      "Run /permissions, which displays the active mode at the top",
+      "You can't check mid-session; the mode is only shown when the session starts",
+      "The status bar shows an indicator like '⏸ plan mode on' or '⏵⏵ accept edits on'",
+      "Ask Claude which mode it's in and it will report the current setting"
+    ],
+    "correctIndex": 2,
+    "explanation": "The status bar always displays the active mode — indicators like '⏸ plan mode on' or '⏵⏵ accept edits on' — so a glance tells you how much the harness will auto-approve, and `Shift+Tab` cycles to a different mode from there. The startup-only option is wrong precisely because modes change mid-session all the time; a persistent indicator exists for that reason. `/permissions` manages allow/deny rules, a layer that composes with modes rather than displaying them. Asking Claude is the instructive wrong answer: the permission mode is harness-side policy applied when tool calls are executed, and (plan mode partly excepted) it isn't sent to the model as information — so Claude has no reliable knowledge of which mode you're in and could only guess."
+  },
+  {
+    "id": "2.2-L2-03",
+    "topic": "2.2",
+    "topicName": "Modes",
+    "difficulty": 2,
+    "question": "Your organization's settings include a deny rule for `Bash(rm -rf *)`. You start a session with `--dangerously-skip-permissions` (bypassPermissions mode). Claude attempts exactly that command. What happens?",
+    "options": [
+      "The command runs — bypassPermissions overrides all configured rules",
+      "A permission prompt appears, since deny rules downgrade bypass mode to default",
+      "The command runs but is logged for later review by the organization",
+      "The command is blocked — deny rules apply in every mode, including bypassPermissions"
+    ],
+    "correctIndex": 3,
+    "explanation": "Deny rules (and explicit ask rules) are enforced in every permission mode, including bypassPermissions. The mental model: the mode sets the default answer to 'may I?', while rules are specific exceptions that always win. That's what lets an organization hard-block dangerous commands regardless of how permissive an individual session is — the guarantee would be worthless if a flag could switch it off. The 'overrides all rules' option misreads what bypass skips: it removes the prompting layer (everything not otherwise denied runs without asking), not the rule layer. No prompt appears either — bypass mode doesn't prompt, and a deny rule blocks outright rather than asking. Note that the inverse asymmetry also holds: allow rules are meaningless in bypass, since everything is already approved; only deny retains force everywhere. All of this is harness-side and provider-neutral."
+  },
+  {
+    "id": "2.2-L2-04",
+    "topic": "2.2",
+    "topicName": "Modes",
+    "difficulty": 2,
+    "question": "You want every Claude Code session in a shared repository to start in plan mode, for all teammates who clone it. What's the supported way?",
+    "options": [
+      "Add a line to the project's CLAUDE.md instructing Claude to always plan before acting",
+      "Set permissions.defaultMode to \"plan\" in the project's .claude/settings.json",
+      "Export CLAUDE_CODE_DEFAULT_MODE=plan in the repository's setup script",
+      "Have each teammate alias claude to 'claude --permission-mode plan' in their shell"
+    ],
+    "correctIndex": 1,
+    "explanation": "`permissions.defaultMode` in a settings file sets the starting mode, and putting it in the project's checked-in `.claude/settings.json` makes it apply to everyone who works in that repository — which is exactly the scoping the scenario asks for (your personal `~/.claude/settings.json` would cover only you). The CLAUDE.md option confuses instructions with enforcement: text in context is a request the model may follow, whereas a permission mode is harness code that reliably gates execution — this distinction is why modes exist at all. There is no `CLAUDE_CODE_DEFAULT_MODE` environment variable. The shell alias would genuinely work per person, but it's manual per-machine setup that lives outside the repo — the settings file is the designed, shareable mechanism, and `--permission-mode` remains the per-invocation override on top of it."
+  },
+  {
+    "id": "2.3-L1-03",
+    "topic": "2.3",
+    "topicName": "Keyboard shortcuts",
+    "difficulty": 1,
+    "question": "You type `@` at the start of your input while writing a prompt in Claude Code. What does it do?",
+    "options": [
+      "Mentions another agent so it joins the session",
+      "Marks the message as high priority for the model",
+      "Opens file path autocomplete so you can drop a file reference into your prompt",
+      "Sends the prompt directly to the API, skipping the harness"
+    ],
+    "correctIndex": 2,
+    "explanation": "`@` triggers file path autocomplete: you pick a path and a reference to that file lands in your prompt, which is the quickest way to point Claude at a specific file without typing the full path or asking it to search. It belongs to a small family of prefix characters that change what the input line means: `/` invokes a command or skill, `!` runs a shell command directly, and `?` toggles the shortcut help panel. There's no agent-mention or priority-flag feature behind `@`, and nothing can skip the harness — every prompt goes through prompt assembly before it becomes an API request, because the harness is the only thing that talks to the API. These prefixes are pure harness features; the model only ever sees their results in the assembled context."
+  },
+  {
+    "id": "2.3-L1-04",
+    "topic": "2.3",
+    "topicName": "Keyboard shortcuts",
+    "difficulty": 1,
+    "question": "You submitted a long prompt with a typo and want to recall it, fix it, and resubmit. Which key brings back your previous prompt?",
+    "options": [
+      "Up arrow",
+      "Ctrl+Z",
+      "Ctrl+O",
+      "Page Up"
+    ],
+    "correctIndex": 0,
+    "explanation": "The `Up` arrow steps back through your prompt history — press it once to recall the last prompt, edit, and resubmit. History is stored per working directory, so the prompts you recall belong to the project you're in. One subtlety once your drafts get long: in a multi-row input the arrows first move the cursor within the text, and only step into history once the cursor is at the top or bottom row. For finding an old prompt by content rather than by stepping, `Ctrl+R` opens reverse search. The distractors do other things: `Ctrl+Z` suspends the whole Claude Code process to your shell (Unix job control — `fg` brings it back), `Ctrl+O` toggles the transcript viewer, and `Page Up` scrolls output rather than recalling input."
+  },
+  {
+    "id": "2.3-L2-03",
+    "topic": "2.3",
+    "topicName": "Keyboard shortcuts",
+    "difficulty": 2,
+    "question": "Claude has started a long test suite through its Bash tool, and you want it to continue working on other things while the tests run. Which shortcut does that?",
+    "options": [
+      "Esc — the command keeps running while Claude moves on",
+      "Ctrl+B — sends the running command to the background",
+      "Ctrl+Z — backgrounds the command inside the session",
+      "Ctrl+D — detaches the command from the session"
+    ],
+    "correctIndex": 1,
+    "explanation": "`Ctrl+B` backgrounds the running Bash command: it keeps executing while Claude proceeds with other work, and the results become available to the session when it finishes — you can see background shells listed under `/tasks`. One practical wrinkle: tmux users press `Ctrl+B` twice, because it's the tmux prefix key and the first press is swallowed by tmux. The distractors misapply neighboring keys: `Esc` interrupts — it stops the current response or tool call rather than letting it continue in parallel; `Ctrl+Z` is shell job control that suspends the entire Claude Code process, not one command inside it; and `Ctrl+D` exits the session. Backgrounding is pure harness-side process management on your machine — nothing about the API request changes, so it works identically on Bedrock and the Anthropic API."
+  },
+  {
+    "id": "2.3-L2-04",
+    "topic": "2.3",
+    "topicName": "Keyboard shortcuts",
+    "difficulty": 2,
+    "question": "You want to re-find a long prompt you wrote earlier in this project without arrow-keying through everything. What does Ctrl+R do in Claude Code?",
+    "options": [
+      "Re-runs your most recent prompt exactly as submitted",
+      "Redraws the terminal screen after visual corruption",
+      "Rewinds the session to the checkpoint you select",
+      "Opens reverse history search: type to filter, Ctrl+R again cycles older matches"
+    ],
+    "correctIndex": 3,
+    "explanation": "`Ctrl+R` opens reverse history search over your prompt history, shell-style: type a fragment to filter, press `Ctrl+R` again to cycle to older matches, then `Tab` or `Esc` to accept the match into the input for editing — or `Enter` to accept and submit immediately. Since prompt history is stored per working directory, the search covers your past prompts in this project. The distractors borrow from neighboring conventions: some shells use `Ctrl+R` differently, but here it doesn't re-run anything — accepted history lands in the input unless you submit it; screen redraw is `Ctrl+L` territory in terminals, not this binding; and rewinding to a checkpoint is `/rewind` or double-`Esc` on an empty prompt — a session-state operation, not an input-history one. Like all shortcuts, this is harness-side and provider-neutral."
+  },
+  {
+    "id": "2.4-L2-05",
+    "topic": "2.4",
+    "topicName": "Useful built-in skills & commands",
+    "difficulty": 2,
+    "question": "Both `/clear` and `/code-review` live behind the `/` prefix, yet `/code-review` consumes tokens and `/clear` costs nothing. Why?",
+    "options": [
+      "/clear is a built-in command running deterministic harness code locally; /code-review is a bundled skill that injects a prompt and has the model do the work",
+      "Both are skills, but /clear's prompt is short enough to fall under the free threshold",
+      "/code-review is routed to a dedicated review endpoint with separate per-review pricing",
+      "/clear does call the model, but with an empty conversation, which prompt caching makes free"
+    ],
+    "correctIndex": 0,
+    "explanation": "The `/` menu mixes two different species. Built-in commands like `/clear` and `/config` execute fixed logic inside the CLI process — same input, same behavior, and typically no API call at all, hence no tokens. Bundled skills like `/code-review`, `/debug`, and `/loop` are prompt-based: invoking one injects prepared instructions into the conversation and the model orchestrates the work with its tools — real agentic workload, with the model's variability and cost, billed to your AWS account when you're on Bedrock. A skill's body also stays in context for the rest of the session, a recurring cost in every resend. Quick tell: needs judgment → skill; manipulates session state → command. There's no free-tier threshold, no separate review endpoint (all requests go to your configured model endpoint), and `/clear` makes no model call — caching never enters into it."
+  },
+  {
+    "id": "2.4-L2-06",
+    "topic": "2.4",
+    "topicName": "Useful built-in skills & commands",
+    "difficulty": 2,
+    "question": "You've made local changes and want Claude to review your uncommitted working diff for bugs before you commit. Which built-in do you invoke?",
+    "options": [
+      "/review",
+      "/code-review",
+      "/security-review",
+      "/verify"
+    ],
+    "correctIndex": 1,
+    "explanation": "`/code-review` is the bundled skill that reviews your local working diff — the pre-commit checkpoint for bugs and cleanup opportunities. The review family is easy to conflate because the names overlap but the targets differ: `/review` points at a GitHub pull request, not your local changes; `/security-review` examines the pending changes on the current branch but specifically for security vulnerabilities, a narrower lens than a general bug review; and `/verify` is a separate check, not the diff-review skill. In current versions, `/code-review` and `/verify` run only when explicitly invoked, so these token-hungry passes never fire on their own. And because these are skills rather than commands, a review is a genuine model workload — reading the diff, chasing context across files — billed like any other agentic work through whichever provider your session resolved."
+  },
+  {
+    "id": "2.4-L2-07",
+    "topic": "2.4",
+    "topicName": "Useful built-in skills & commands",
+    "difficulty": 2,
+    "question": "Your team wants `/code-review` to run its own review checklist instead of the stock behavior, for everyone working in the repository. How do you do it?",
+    "options": [
+      "Edit the bundled skill's file inside the Claude Code installation directory",
+      "You can't override bundled names; publish yours under a new name like /team-review",
+      "Create a skill named code-review in the project's .claude/skills/ — same-named skills replace bundled ones",
+      "Set skillOverrides in settings.json to point the bundled skill at your file"
+    ],
+    "correctIndex": 2,
+    "explanation": "Bundled skills sit at the lowest layer of name resolution: a skill with the same name at the enterprise, personal (`~/.claude/skills/`), or project (`.claude/skills/`) level replaces the bundled one. Dropping a `code-review` skill into the project's `.claude/skills/` and committing it means everyone's `/code-review` now runs the team checklist — a clean way to standardize review criteria in a repo. Editing files inside the installation is the wrong layer (changes would be fragile and lost on update; the override mechanism exists so you never need to). Bundled names absolutely can be shadowed, so a new name isn't required. The `skillOverrides` distractor is the near-miss: it's a real setting, but it hides a skill or collapses it to name-only in the model's skill listing to save context — it doesn't substitute your implementation. Note the contrast: built-in commands (like `/clear`) aren't override-able files at all; they're part of the CLI."
+  },
+  {
+    "id": "2.4-L2-08",
+    "topic": "2.4",
+    "topicName": "Useful built-in skills & commands",
+    "difficulty": 2,
+    "question": "What does the `/doctor` command do?",
+    "options": [
+      "Tests connectivity to your model endpoint and reports your remaining Bedrock quota",
+      "Scans your codebase for bugs and proposes fixes",
+      "Repairs corrupted transcript files so old sessions can be resumed",
+      "Checks installation health and settings problems, including an estimate of what your skill listing costs in context"
+    ],
+    "correctIndex": 3,
+    "explanation": "`/doctor` is the setup checkup: it verifies installation health, flags problems in your settings, and estimates how much of your context window the skill listing consumes — a useful nudge, since every skill description rides along in each resent request whether or not the skill ever fires. It's notable as the one built-in that survives even when `disableBundledSkills` turns the rest of the bundled surface off. The distractors assign it neighboring jobs it doesn't have: provider-side concerns like Bedrock quotas live in AWS tooling, not the harness (`/status` covers which provider and region resolved, but not quota); reviewing code for bugs is the `/code-review` skill's territory; and transcript files don't have a repair command — they're plain JSONL on disk. Think of `/doctor` as diagnostics for the harness itself, not for your code or your provider."
+  },
+  {
+    "id": "2.5-L2-05",
+    "topic": "2.5",
+    "topicName": "Invocation & flags",
+    "difficulty": 2,
+    "question": "What's the difference between `--append-system-prompt` and `--system-prompt`?",
+    "options": [
+      "They're aliases; --system-prompt is the newer preferred spelling",
+      "--system-prompt applies to the first turn only, while --append-system-prompt persists across turns",
+      "--append-system-prompt edits CLAUDE.md on disk, while --system-prompt injects text per request",
+      "--append-system-prompt adds your text after the default system prompt; --system-prompt replaces the entire thing, dropping Claude Code's own operating instructions"
+    ],
+    "correctIndex": 3,
+    "explanation": "The two flags differ in blast radius. `--append-system-prompt` adds your text to the end of the default system prompt, keeping the harness's tool instructions and operating guidance intact — the right choice for adding policy or persona on top of normal behavior. `--system-prompt` replaces the whole thing: powerful, and usually wrong for everyday use, because you lose the instructions that make Claude Code behave like Claude Code. They're not aliases, and neither is turn-scoped — the system prompt is part of the stable prefix the harness assembles into every request, so both flags affect every turn of the session. Neither touches CLAUDE.md, which is a separate context-file mechanism. One caching corollary: since you're editing the stable prefix, first use means a fresh cache write; identical on Bedrock and the Anthropic API."
+  },
+  {
+    "id": "2.5-L2-06",
+    "topic": "2.5",
+    "topicName": "Invocation & flags",
+    "difficulty": 2,
+    "question": "Your team runs Claude Code on Bedrock and wants `--model sonnet` (the alias) to resolve to one specific inference profile for everyone, so the alias never silently drifts to a model your account can't invoke. Which environment variable pins it?",
+    "options": [
+      "ANTHROPIC_MODEL",
+      "AWS_BEDROCK_MODEL_ID",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "CLAUDE_CODE_USE_BEDROCK"
+    ],
+    "correctIndex": 2,
+    "explanation": "`ANTHROPIC_DEFAULT_SONNET_MODEL` (with sibling `_OPUS_` and `_HAIKU_` variants) pins what the corresponding alias resolves to — set it to a Bedrock inference profile ID or ARN and `--model sonnet` means that exact model for everyone, which is precisely the team-rollout concern in the question. The near-miss is `ANTHROPIC_MODEL`: it sets the primary model directly, but it doesn't define the alias mapping — someone typing `--model sonnet` would still get the default resolution. `AWS_BEDROCK_MODEL_ID` isn't a Claude Code variable at all, and `CLAUDE_CODE_USE_BEDROCK` only routes the API layer to Bedrock without saying anything about which model. Practical tip: these don't have to be shell exports — the `env` block of a settings file (like a project's `.claude/settings.json`) sets them per project, and `/status` confirms what resolved."
+  },
+  {
+    "id": "2.5-L2-07",
+    "topic": "2.5",
+    "topicName": "Invocation & flags",
+    "difficulty": 2,
+    "question": "You resume a past session with `claude --resume <id> --fork-session`. What does adding `--fork-session` change?",
+    "options": [
+      "It resumes the session in a separate git worktree so file changes stay isolated",
+      "It continues the conversation under a new session ID, leaving the original transcript untouched",
+      "It spawns a subagent that works on the old session while you start a fresh one",
+      "It copies the session to a shared location so a teammate can resume it too"
+    ],
+    "correctIndex": 1,
+    "explanation": "`--fork-session` resumes the conversation under a new session ID: your continued work is recorded as a fresh transcript, and the original session's record is left exactly as it was — so you can branch an exploration without contaminating the point you might want to return to. Why this is cheap is the keystone in action: a 'session' is only a local transcript file plus whatever the harness resends as history; forking is essentially copying a file and continuing from it — nothing server-side exists to duplicate, on Bedrock or the Anthropic API alike. The distractors graft on unrelated machinery: worktree isolation is a git-level technique used in multi-agent workflows, not this flag; no subagent is involved — you get one ordinary session; and transcripts live locally under `~/.claude/projects/`, with no shared-location copy feature behind this flag."
+  },
+  {
+    "id": "2.5-L2-08",
+    "topic": "2.5",
+    "topicName": "Invocation & flags",
+    "difficulty": 2,
+    "question": "When Claude Code runs against Bedrock, how does it decide which AWS region to send requests to?",
+    "options": [
+      "AWS_REGION first, then AWS_DEFAULT_REGION, then the active AWS profile's configured region",
+      "It defaults to us-east-1 unless you pass a --region flag at startup",
+      "The region is taken from the model ID string in your settings.json",
+      "Bedrock routes each request automatically to the nearest region with capacity"
+    ],
+    "correctIndex": 0,
+    "explanation": "Region resolution follows the standard AWS chain: `AWS_REGION` wins if set, then `AWS_DEFAULT_REGION`, then the region configured on the active AWS profile. This mirrors how credentials resolve — Claude Code leans on the AWS SDK's conventions rather than inventing its own — and `/status` shows both the resolved region and where the setting came from, which is the first thing to check when requests land somewhere unexpected. There's no `--region` flag or hard-coded us-east-1 default in the harness. The model-ID distractor has a grain of truth worth untangling: cross-region inference profile IDs carry a geographic prefix (like `us.`) that governs where inference may run, but that's not how the harness picks the endpoint region for your requests. And Bedrock doesn't auto-route to 'nearest capacity' — your requests go to the region your configuration resolves, and regional model availability is exactly why that choice matters."
+  }
+]

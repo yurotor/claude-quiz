@@ -1,0 +1,196 @@
+{
+  "4.1": {
+    "title": "Hooks",
+    "intro": "Hooks are the loop-native extension point: commands the harness runs at named events in the agent loop. They fire deterministically in the harness process — the model never gets a vote on whether they run.",
+    "sections": [
+      {
+        "heading": "Callbacks at seams of the loop",
+        "body": "There is one agent loop: assemble prompt, send, execute tools, resend. Hooks are callbacks registered at named seams of that loop. When the event fires, the harness runs your command on your machine — not on Anthropic's or AWS's servers, and not inside the model. That placement gives hooks three properties. First, they cost zero context by default: a hook that only observes adds nothing to the prompt. Second, they can short-circuit the loop: a hook can stop a tool call before it executes. Third, they are provider-neutral — hooks never touch the API layer, so they behave identically on Bedrock and the Anthropic API.\n\nHooks resolve a tension in the configuration story: they are harness-side machinery that can also produce request-shaping content. A `UserPromptSubmit` hook runs in the harness, yet its stdout can be injected into the prompt the model sees. Hooks are the bridge that turns loop events into payload."
+      },
+      {
+        "heading": "The event map",
+        "body": "The core events trace the loop itself. `SessionStart` fires when a session begins or resumes. `UserPromptSubmit` fires before Claude processes your prompt. `PreToolUse` and `PostToolUse` bracket every tool call. `Stop` fires when Claude finishes a turn; `SubagentStart` and `SubagentStop` bracket delegated work. `PreCompact` fires before context compaction, and `Notification` covers things like permission prompts.\n\nTool events accept a matcher that filters by tool name: an exact string (`Bash`), alternatives (`Edit|Write`), a regex (`mcp__github__.*` for all tools from one MCP server), or `*` for everything. Other events match on their own dimension — `SessionStart` on the source (`startup`, `resume`, `clear`, `compact`), `PreCompact` on `manual` vs `auto`. Some events, like `UserPromptSubmit` and `Stop`, take no matcher and always fire."
+      },
+      {
+        "heading": "Exit codes: the blocking contract",
+        "body": "A hook communicates through its exit code. Exit 0 means success: the action proceeds. Normally stdout goes only to the debug log, but for `UserPromptSubmit` and `SessionStart` it is added as context the model can see — that is how hooks inject.\n\nExit 2 is the blocking signal, and stderr is fed back to Claude as the explanation. What blocking means depends on the event: `PreToolUse` cancels the tool call and hands the model the rejection instead; `UserPromptSubmit` rejects the prompt; `Stop` prevents Claude from stopping, forcing it to continue; `PreCompact` blocks compaction. Events that report something already finished — `PostToolUse`, `Notification` — cannot un-happen it; their exit-2 feedback is advisory.\n\nAny other exit code is a non-blocking error: execution continues and the failure is noted. This three-way contract (0 / 2 / other) is the part worth memorizing."
+      },
+      {
+        "heading": "JSON control beyond exit codes",
+        "body": "For finer control, a hook exiting 0 can print structured JSON to stdout. A top-level `{\"decision\": \"block\", \"reason\": \"...\"}` blocks with an explanation on events that support it. `PreToolUse` hooks get the richest interface: `hookSpecificOutput.permissionDecision` can be `allow` (auto-approve, skipping the permission prompt), `deny`, or `ask` (escalate to the user), and the hook can even rewrite the tool's input before it runs. A `PostToolUse` hook can replace the tool's output — for example, redacting secrets before they enter context. The universal field `\"continue\": false` stops Claude entirely, regardless of event.\n\nThis JSON channel is what turns hooks from tripwires into policy engines: allow `npm test` silently, deny writes to production paths, route everything else to the human."
+      },
+      {
+        "heading": "Where hooks live",
+        "body": "Hooks are configured in the same settings tiers as everything else: `~/.claude/settings.json` (all your projects), `.claude/settings.json` (shared with the team via version control), `.claude/settings.local.json` (project-private), managed policy files (organization-wide), and plugins. The structure nests event → matcher group → hook list, where each hook entry has a `type` (usually `command`), the command itself, and an optional `timeout` (default 600 seconds for commands). Run `/hooks` to see every configured hook by event and source.\n\nBecause hooks execute arbitrary commands with your credentials, treat project-scoped hooks in a cloned repository like any other code you are about to run: read them before trusting the workspace."
+      },
+      {
+        "heading": "Hooks vs asking the model nicely",
+        "body": "You can write \"always run the formatter after editing\" in `CLAUDE.md`, and the model will usually comply — but instructions in context are probabilistic. They compete with everything else in the prompt, they can be compacted away, and a long session degrades adherence. A `PostToolUse` hook on `Edit|Write` that runs the formatter is guaranteed: it fires every time, in the harness, whether or not the model remembers.\n\nThe rule of thumb: use hooks for invariants that must hold every time (formatting, lint gates, blocking dangerous commands, audit logging) and context instructions for things requiring judgment (style preferences, architectural taste). If the sentence starts with \"always\" or \"never\", it probably wants to be a hook."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Hooks reference", "url": "https://code.claude.com/docs/en/hooks" }
+    ]
+  },
+  "4.2": {
+    "title": "Skills",
+    "intro": "Skills intervene at the assembly seam of the loop: they inject instructions into the prompt. The trick is progressive disclosure — the model always knows a skill exists, but pays for its body only when it is used.",
+    "sections": [
+      {
+        "heading": "What a skill is",
+        "body": "A skill is a directory containing a `SKILL.md` file: YAML frontmatter between `---` markers, then Markdown instructions. The frontmatter's `description` tells Claude when the skill applies; the body is what Claude follows once it loads. The directory name becomes the command — `.claude/skills/deploy-staging/SKILL.md` creates `/deploy-staging`.\n\nThe directory can hold more than `SKILL.md`: templates, example outputs, executable scripts, reference docs. `SKILL.md` should reference these so Claude knows what each contains and reads them only when needed — keep the entrypoint under roughly 500 lines and push detail into supporting files. Create a skill when you keep pasting the same procedure into chat, or when a section of `CLAUDE.md` has grown from a fact into a procedure."
+      },
+      {
+        "heading": "Progressive disclosure — the cost model",
+        "body": "This is the mechanism that makes skills different from `CLAUDE.md`. Skill descriptions are always in context, so Claude can decide when one is relevant; skill bodies load only on invocation. A 2,000-word deployment runbook costs a one-line description per turn until the day you actually deploy.\n\nContrast with `CLAUDE.md`, which rides in the prompt on every single turn — and because the harness resends the entire conversation each turn (the stateless loop), every always-present token is paid again and again. Skills convert that recurring cost into a pay-on-use cost.\n\nOne asymmetry to know: once invoked, the rendered skill content enters the conversation as a message and stays for the rest of the session — it is not re-read from disk on later turns, and it does not unload. The lazy part is loading, not lifetime."
+      },
+      {
+        "heading": "Where skills live and who wins",
+        "body": "Three levels: personal (`~/.claude/skills/<name>/SKILL.md`, all your projects), project (`.claude/skills/<name>/SKILL.md`, checked into the repo), and plugin (`<plugin>/skills/<name>/SKILL.md`, namespaced as `plugin-name:skill-name` so it cannot collide with the others).\n\nOn a name clash, enterprise-managed skills override personal, and personal overrides project. A skill at any level also overrides a bundled skill of the same name — a project `code-review` skill replaces the built-in `/code-review`. Legacy `.claude/commands/` files participate too, but a skill beats a same-named command.\n\nBecause project skills arrive with a cloned repository and can request tool permissions via frontmatter, they take effect only after you accept the workspace trust dialog — review them like code."
+      },
+      {
+        "heading": "Who invokes: you, the model, or both",
+        "body": "By default a skill is both user-invocable (`/name`) and model-invocable (Claude loads it when the description matches the task). Two frontmatter switches change that.\n\n`disable-model-invocation: true` means only you can trigger it. Use this for workflows with side effects — `/deploy`, `/commit`, `/send-slack-message` — where you want to control timing; you don't want Claude deciding to deploy because the code \"looks ready\". As a bonus, the description is dropped from the always-loaded listing, costing zero context until used.\n\n`user-invocable: false` is the mirror image: only Claude can invoke it, and it is hidden from the `/` menu. Use it for background knowledge that is not a meaningful user action — a `legacy-system-context` skill Claude should consult when relevant."
+      },
+      {
+        "heading": "Frontmatter beyond triggering",
+        "body": "Several fields shape how a skill runs. `allowed-tools` pre-approves listed tools for the turn that invokes the skill — Claude can run them without permission prompts, and the grant clears on your next message (the skill's text persists; its permissions do not). `model` switches models for the rest of the current turn — route a mechanical task to a cheaper model. `argument-hint` documents expected arguments in autocomplete. `paths` restricts automatic loading to work on matching files.\n\nThe most structural field is `context: fork`, which runs the skill in its own subagent rather than inline — its work happens in a separate context window and only the result returns, with `agent` choosing the subagent type. That is one seam invoking another: a skill (assembly seam) offloading to a subagent (the offload seam)."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Extend Claude with skills", "url": "https://code.claude.com/docs/en/skills" }
+    ]
+  },
+  "4.3": {
+    "title": "Custom Commands",
+    "intro": "Custom slash commands are the smallest extension point: a Markdown file that becomes a reusable prompt template. In current Claude Code they have been merged into skills — same machinery, simpler packaging.",
+    "sections": [
+      {
+        "heading": "Commands are skills now",
+        "body": "A file at `.claude/commands/deploy.md` and a skill at `.claude/skills/deploy/SKILL.md` both create `/deploy`, support the same frontmatter, and work the same way. Existing `.claude/commands/` files keep working; user-level commands live in `~/.claude/commands/`. If a command and a skill share a name, the skill wins.\n\nWhat the merge means mechanically: typing `/deploy` expands the file's content into your prompt — a template substitution at the assembly seam, before anything is sent. The file's body becomes instructions in the current turn's message. There is no separate \"command engine\"; a command is a single-file, user-triggered skill."
+      },
+      {
+        "heading": "Arguments",
+        "body": "Commands accept arguments after the name: `/fix-issue 417` makes the text `417` available inside the template via `$ARGUMENTS`, so the file can say \"Fix GitHub issue $ARGUMENTS following our conventions\". The `argument-hint` frontmatter field (for example `[issue-number]`) documents the expected shape in the autocomplete menu.\n\nBecause expansion happens before the request is assembled, arguments are pure text substitution — the model sees only the final expanded prompt, never the template. That makes commands deterministic in a way instructions are not: the same invocation always produces the same injected text."
+      },
+      {
+        "heading": "When a command beats a full skill",
+        "body": "Reach for a bare command file when the whole procedure fits in one prompt, you always trigger it yourself, and it needs no supporting files: commit-message conventions, a standard review checklist, a boilerplate generator.\n\nGraduate to a skill directory when you need what the merge added: supporting files (scripts, templates, reference docs loaded on demand), invocation control (`disable-model-invocation` for side-effect workflows, or letting Claude auto-load it when relevant), tool pre-approval via `allowed-tools`, or `context: fork` to run in a subagent. The upgrade path is mechanical — move `deploy.md` into `deploy/SKILL.md` and the `/deploy` command is unchanged."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Skills (custom commands section)", "url": "https://code.claude.com/docs/en/skills" },
+      { "label": "Claude Code docs — Commands reference", "url": "https://code.claude.com/docs/en/commands" }
+    ]
+  },
+  "4.4": {
+    "title": "MCP",
+    "intro": "The Model Context Protocol adds a third tool executor to the loop. The model still just emits `tool_use` blocks; MCP changes who executes them — an external server instead of the harness or the provider.",
+    "sections": [
+      {
+        "heading": "A third executor",
+        "body": "Recall the tool protocol: the model emits a `tool_use` block, something executes it, and a `tool_result` comes back as the next user message. Who executes? Built-in tools (`Bash`, `Read`, `Edit`) run in the harness on your machine. Server-side tools (like web search) run on the provider's infrastructure inside the request. MCP adds the third executor: an external server — a local process or a remote service — that the harness routes matching `tool_use` calls to.\n\nEach connected server advertises its tools at startup; the harness folds their schemas into the `tools` parameter of the API request, so from the model's point of view an MCP tool is indistinguishable from a built-in. Three executors, one protocol. That symmetry is why MCP integrates so cleanly — nothing about the loop changes."
+      },
+      {
+        "heading": "Transports",
+        "body": "Four transports, two that matter most. `stdio` runs the server as a local child process — the config is a `command`, `args`, and `env`; ideal for tools needing direct system access. `http` is the recommended transport for remote servers (`claude mcp add --transport http name https://...`); the MCP spec calls it `streamable-http`, and Claude Code accepts that alias in JSON config. `sse` (Server-Sent Events) is deprecated in favor of HTTP. `ws` (WebSocket) exists for servers that push events unprompted, but supports only header auth and cannot be added via the `--transport` flag.\n\nOne config gotcha: a JSON entry with a `url` but no `type` is read as a stdio server and skipped with an error — remote entries must declare their transport."
+      },
+      {
+        "heading": "Three config scopes",
+        "body": "Where a server definition lives determines who gets it. Local scope (the default) stores the server in `~/.claude.json` under the current project's path — private to you, in this project only. Project scope writes `.mcp.json` at the project root, designed to be checked into version control so the whole team shares the configuration. User scope (`--scope user`) makes a server available to you across all projects.\n\nPrecedence on a name clash: local beats project beats user.\n\nBecause a cloned repository's `.mcp.json` could point at anything, Claude Code prompts for approval before using project-scoped servers, and a repo cannot approve its own servers via committed settings — approval is yours. `claude mcp reset-project-choices` clears those decisions."
+      },
+      {
+        "heading": "Tool naming, auth, and limits",
+        "body": "MCP tools follow the naming convention `mcp__<server>__<tool>` — for example `mcp__github__create_pr`. This full name is what you use in permission rules, hook matchers (`mcp__github__.*`), and subagent `tools` lists. Plugin-bundled servers get a longer form: `mcp__plugin_<plugin>_<server>__<tool>`.\n\nRemote servers that require OAuth 2.0 authenticate through the `/mcp` panel, which walks the browser flow and stores tokens; simpler setups pass API keys as headers or env vars in the server config.\n\nTwo context protections matter. Tool schemas cost tokens on every turn (the full resend), so the harness can defer schemas — tools appear by name only and load on demand via `ToolSearch`. And tool outputs are capped: 25,000 tokens by default with a warning at 10,000, raisable via `MAX_MCP_OUTPUT_TOKENS`. A chatty server cannot silently flood your window."
+      },
+      {
+        "heading": "The Bedrock angle",
+        "body": "MCP is entirely harness-side plumbing. The server list, transports, approvals, and routing never touch the model API — so everything on this page works identically whether Claude Code talks to Bedrock or to the Anthropic API. `CLAUDE_CODE_USE_BEDROCK` changes the door the harness sends requests through; it does not change how tools execute.\n\nThe subtlety worth flagging: an MCP server is its own program, and some servers make their own model calls internally (a summarization server, an agent-in-a-server). Those calls use the server's credentials and provider, not yours — your Bedrock configuration does not propagate into an external process. If governance requires all model traffic to stay inside AWS, you must vet each MCP server's own behavior separately; the harness only guarantees where its traffic goes."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Connect to tools via MCP", "url": "https://code.claude.com/docs/en/mcp" }
+    ]
+  },
+  "4.5": {
+    "title": "Subagents",
+    "intro": "A subagent is not the model \"thinking harder\" — it is a whole separate agent loop with its own context window. Only its final report crosses back to the parent. That pass-by-value boundary is the entire point.",
+    "sections": [
+      {
+        "heading": "A separate loop, pass by value",
+        "body": "When Claude uses the `Agent` tool, the harness spawns a child agent loop: its own system prompt, its own context window, its own transcript, its own tool calls, its own permission checks. The child sees none of the parent's conversation history — it gets only the task prompt the parent wrote, plus basic environment details like the working directory.\n\nWhen the child finishes, its final text report returns to the parent as a single `tool_result`. Everything else — every file it read, every search result, every intermediate step — stays in the child's context and dies with it (the transcript persists on disk, but not in the parent's window).\n\nThat is pass-by-value semantics: the parent receives a copy of the conclusion, never a reference into the child's working memory. If the child didn't put it in the report, the parent will never know it."
+      },
+      {
+        "heading": "Why isolation is the point",
+        "body": "Connect this to the keystone: the harness resends the parent's entire conversation every turn. Any token that enters the parent's context is paid again on every subsequent API call for the rest of the session. Fifty thousand tokens of grep output read inline is not a one-time cost — it is a recurring tax, and it drags the parent toward compaction.\n\nDelegate that search to a subagent and the parent's context grows only by the returned summary — a few hundred tokens instead of fifty thousand. The exploration happened, the conclusion arrived, the bulk never touched the parent's resend.\n\nThe corollary cuts the other way: when the details themselves must inform your next edits — the exact code you are about to modify — read them inline. A summary of code is not code. Delegate high-volume, low-retention reading; keep load-bearing detail in the main loop."
+      },
+      {
+        "heading": "The built-ins",
+        "body": "Claude Code ships with built-in subagents it delegates to automatically. `Explore` is the read-only search agent — Claude sends it broad codebase questions and gets conclusions back without flooding the main context; the caller specifies thoroughness (quick / medium / very thorough). `Plan` does read-only research during plan mode, keeping exploration out of the main window while the conversation stays non-mutating. `general-purpose` gets the full tool set for multi-step tasks that mix exploration and modification.\n\nA detail with cost implications: `Explore` and `Plan` skip loading your `CLAUDE.md` files to keep research fast and cheap; other subagents load them. And delegation itself is description-driven — Claude matches the task against each agent's `description` field, which is why writing that field well is the main lever over when your custom agents get used."
+      },
+      {
+        "heading": "Custom agent definitions",
+        "body": "A custom subagent is a Markdown file with YAML frontmatter, in `.claude/agents/` (project, check it in) or `~/.claude/agents/` (personal, all projects); plugins and a `--agents` CLI flag are additional sources, and the definition closest to your working directory wins on a name clash.\n\nOnly `name` and `description` are required. The Markdown body becomes the child's system prompt — it replaces, not extends, the default. Frontmatter shapes the sandbox: `tools` restricts the tool list, `model` pins a model (route mechanical work to Haiku), `permissionMode` sets its permission behavior, `maxTurns` caps runaway loops, `skills` preloads full skill bodies at startup, and `isolation: worktree` gives the agent a temporary git worktree so its edits cannot collide with yours.\n\nThe pattern: encode a repeatable role — code reviewer, test runner, migration auditor — once, with exactly the tools and model that role needs."
+      },
+      {
+        "heading": "Foreground, background, and reporting",
+        "body": "Subagents now run in the background by default: the parent keeps working while the child runs, and the child's report arrives later as a completion notification the parent consumes on a subsequent turn. Foreground runs block until done — Claude uses them when it needs the result before continuing. Permission prompts from either mode surface in your main session, naming the subagent that asked; a child cannot approve anything on your behalf.\n\nTwo operational notes. Background subagents get a reduced built-in tool set compared to foreground ones — the same definition can resolve to different tools depending on where it runs. And a subagent can be resumed or sent follow-up messages, continuing with its context intact — useful when the first report raises a follow-up question, because asking the same child is cheaper than briefing a new one from scratch."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Create custom subagents", "url": "https://code.claude.com/docs/en/sub-agents" }
+    ]
+  },
+  "4.6": {
+    "title": "Agent Teams & Orchestration",
+    "intro": "Agent teams scale past the subagent model: instead of children reporting to one parent, multiple full Claude Code sessions coordinate as peers — a lead plus teammates with a shared task list and direct messaging.",
+    "sections": [
+      {
+        "heading": "From one loop to many sessions",
+        "body": "A subagent is a child loop inside your session that can only report back to its caller. An agent team is a different topology: the main session becomes the team lead, and each teammate is a separate, full Claude Code session — its own context window, its own loop, loading the project context (`CLAUDE.md`, MCP servers, skills) like any fresh session would. The lead's conversation history does not carry over; a teammate knows only its spawn prompt plus what the project provides.\n\nTeams are experimental and disabled by default — enable with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in your environment or `settings.json`. Once enabled, you describe the parallel work in natural language and the lead spawns teammates; you can also select any teammate in the agent panel and message it directly, without going through the lead."
+      },
+      {
+        "heading": "The coordination machinery",
+        "body": "Two shared structures replace the parent-child reporting line. The shared task list (stored under `~/.claude/tasks/`) holds work items with three states — pending, in progress, completed — and dependency links; a task with unresolved dependencies cannot be claimed. The lead assigns tasks, or teammates self-claim the next unblocked one, with file locking preventing two teammates from grabbing the same task.\n\nMessaging runs through mailboxes: each agent has a JSON inbox at `~/.claude/teams/{team-name}/inboxes/`, and any teammate can message any other by name — the peer-to-peer channel subagents lack.\n\nHooks extend into this layer as quality gates: `TeammateIdle` fires when a teammate is about to go idle (exit 2 sends feedback and keeps it working), and `TaskCreated` / `TaskCompleted` can block task transitions — a deterministic \"definition of done\" enforced in the harness."
+      },
+      {
+        "heading": "Teams vs subagents — choosing",
+        "body": "The decision rule: do the workers need to talk to each other? Subagents are cheaper and simpler — results are summarized back into the caller's context, and the main agent does all coordination. Use them when only the conclusion matters: research, verification, focused implementation of a spec.\n\nTeams earn their overhead when the work benefits from peer discussion: parallel code review with different lenses (security, performance, test coverage), debugging by competing hypotheses where teammates actively try to disprove each other's theories, or cross-layer features where frontend, backend, and test owners must negotiate interfaces as they go.\n\nFor sequential work, same-file edits, or heavily dependent steps, both are the wrong tool — a single session outperforms a team that spends its tokens on coordination. Practical guidance from the docs: start with 3–5 teammates and 5–6 tasks each."
+      },
+      {
+        "heading": "Parallel work needs isolated files",
+        "body": "Teammates run in the same working directory by default, and nothing merges concurrent edits — two teammates writing the same file simply overwrite each other. The first defense is decomposition: split the work so each teammate owns a disjoint set of files.\n\nThe stronger defense is worktree isolation. Git worktrees give each parallel agent its own checkout of the repository on its own branch, sharing the same underlying repo; edits land in separate directories and integrate later through normal git merges. The same idea appears one level down in the subagent world as `isolation: worktree` frontmatter, which spawns the agent in a temporary worktree that is cleaned up automatically if nothing changed.\n\nThe invariant to carry: parallelism in the model layer is easy; parallelism in the filesystem is where fan-out actually breaks. Isolate the filesystem, not just the context windows."
+      },
+      {
+        "heading": "Cost multiplication — and Bedrock quotas",
+        "body": "Every teammate is a full session running the full stateless-loop economics: its own context, its own per-turn resend of everything it has accumulated. Token usage therefore scales roughly linearly with team size — five teammates approach five sessions' worth of spend, plus coordination messages on top.\n\nOn Bedrock this multiplies against your account's service quotas, not a per-seat plan. Fan-out means N sessions issuing concurrent requests against shared tokens-per-minute and requests-per-minute quotas in your region — a team that runs smoothly on the Anthropic API can throttle on on-demand Bedrock, surfacing as `ThrottlingException` errors and stalled teammates that stop mid-task. Before running teams on Bedrock, check your quotas against the expected concurrency, consider provisioned throughput for sustained workloads, and remember that pointing teammates at a cheaper model reduces cost but not request-rate pressure."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Orchestrate agent teams", "url": "https://code.claude.com/docs/en/agent-teams" },
+      { "label": "Claude Code docs — Create custom subagents", "url": "https://code.claude.com/docs/en/sub-agents" }
+    ]
+  },
+  "4.7": {
+    "title": "Dynamic Workflows",
+    "intro": "There are two ways to orchestrate multi-agent work: let the model decide the shape in-loop, or write a script that imposes the shape from outside. Knowing which to reach for is an architecture decision, not a tooling one.",
+    "sections": [
+      {
+        "heading": "Two orchestration styles",
+        "body": "Model-driven orchestration happens inside a session: Claude reads the task, decides whether to spawn subagents or teammates, picks how to split the work, and adapts as results come back. It is flexible and zero-setup — and probabilistic. The same prompt can produce different decompositions on different runs.\n\nDeterministic orchestration inverts control: a script you write (a shell pipeline calling headless `claude -p` per stage, or a program built on the Agent SDK) owns the sequencing. Each stage is a fresh invocation — its own stateless loop, its own context — and the script handles ordering, retries, gating, and what flows between stages, typically as files or captured output. The model does the work inside each stage; the structure between stages is code, and code does not improvise."
+      },
+      {
+        "heading": "When structure beats one big context",
+        "body": "A long multi-stage job run in a single session accumulates everything: stage one's exploration is still being resent — or has been lossily compacted — while stage four executes. Costs grow superlinearly and early details blur.\n\nA pipeline resets that. Each stage starts a fresh context containing only its inputs: analyze writes `findings.md`, implement reads it, verify checks the diff. Handing artifacts through files instead of shared context is the same pass-by-value discipline subagents enforce — applied between whole invocations rather than within one.\n\nDeterminism also composes with the other seams: hooks and plain exit codes make honest gates between stages (tests must pass before the next `claude -p` fires), which no in-context instruction can guarantee."
+      },
+      {
+        "heading": "Choosing — and mixing",
+        "body": "Reach for model-driven orchestration when the decomposition itself needs judgment: exploratory debugging, open-ended research, work where the right split only emerges as findings arrive. Reach for a script when the workflow is known, repeatable, and must be auditable — CI review gates, nightly migrations, batch refactors across many repos — where you want the same stages in the same order every run, with machine-checkable checkpoints.\n\nThe strongest pattern is hybrid: deterministic skeleton, dynamic interior. The script fixes the stages and the gates; within a stage, the model still delegates to subagents as it sees fit. Structure where you need guarantees, model judgment where you need adaptation."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Create custom subagents", "url": "https://code.claude.com/docs/en/sub-agents" },
+      { "label": "Claude Code docs — Agent SDK: the agent loop", "url": "https://code.claude.com/docs/en/agent-sdk/agent-loop" }
+    ]
+  }
+}

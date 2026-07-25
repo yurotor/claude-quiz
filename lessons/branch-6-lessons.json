@@ -1,0 +1,218 @@
+{
+  "6.1": {
+    "title": "What a model is",
+    "intro": "Strip away the chat interface and a language model is a very large file of numbers plus a small amount of code that does arithmetic with them. Holding that picture makes almost everything else in this branch — size, speed, cost, the context window — follow logically.",
+    "sections": [
+      {
+        "heading": "Weights are numbers in memory",
+        "body": "A model is billions of learned numbers called weights (or parameters), produced once during training and then frozen. Inference — answering your prompt — is not lookup or search; it is arithmetic. Your text is converted to tokens, the tokens flow through layer after layer of matrix multiplications against those weights, and out comes a probability distribution over possible next tokens.\n\nOn the serving side, the weights are loaded into accelerator memory once, read-only, and shared: every user's request flows through the same weights. There is no per-user copy and no per-user state living inside the model between calls. That is the physical root of the keystone fact about Claude Code: the API is stateless, so the harness must resend the entire conversation every turn."
+      },
+      {
+        "heading": "Parameters vs file size vs capability",
+        "body": "Three different numbers get conflated. Parameter count is how many weights the model has — a \"200B model\" has roughly 200 billion of them. File/memory size is parameter count times how many bits store each weight: size (GB) ≈ params (billions) × bits-per-weight ÷ 8. So the same model can occupy very different amounts of memory depending on storage precision (that knob is quantization, topic 6.6).\n\nCapability correlates with parameter count but not linearly, and not automatically: training data, training technique, and architecture matter enormously, and a well-trained smaller model routinely beats a poorly-trained larger one. Parameter count tells you about capacity and about serving cost — it never guarantees quality on your task."
+      },
+      {
+        "heading": "The context window is a hard budget",
+        "body": "The context window is the maximum number of tokens the model can attend over in a single call — system prompt, tool schemas, conversation history, and the reply all inside one budget. It is not a memory that fills gradually across a session; because of the stateless resend, every single call must fit the whole assembled prompt inside it.\n\nThis is why the window is a hard engineering constraint, not a soft preference: as a Claude Code session grows, each turn's resend grows with it, and when the assembled prompt approaches the limit the harness must compact — summarize and drop history — or the next call simply cannot be made. The window caps a call, and therefore caps how much conversation can survive verbatim."
+      }
+    ],
+    "resources": [
+      { "label": "Claude platform docs — Glossary", "url": "https://docs.claude.com/en/docs/about-claude/glossary" }
+    ]
+  },
+  "6.2": {
+    "title": "The read phase (prefill)",
+    "intro": "A model call is not one operation but two: prefill (read the whole prompt) then decode (write the reply token by token). Prefill is where most of the compute goes, and it is exactly the work that Claude Code's full-resend loop repeats every turn — which makes it the key to understanding caching, input pricing, and time-to-first-token.",
+    "sections": [
+      {
+        "heading": "Two phases, not one box",
+        "body": "The mental model \"input → model → output\" hides the only distinction that matters for cost and latency. When a request arrives, the server first runs prefill: it processes the entire input prompt to build up internal state. Only then does decode begin, generating the reply one token at a time against that state.\n\nThe two phases have opposite performance characters. Prefill scales with input length and is compute-bound; decode scales with output length and is memory-bandwidth-bound (topic 6.3). Nearly all the raw work in a typical Claude Code call is prefill, because the assembled prompt — system prompt, tool schemas, CLAUDE.md, the whole conversation so far — is usually tens of thousands of tokens, while the reply is far shorter. Turn 41 re-reads turns 1–40, which turn 40 already read; prefill is what the resend repeats."
+      },
+      {
+        "heading": "Parallel ingestion, compute-bound",
+        "body": "Prefill's superpower is parallelism. All input tokens are already known, so the model can process them simultaneously: at every layer, each token's computation runs alongside every other token's, saturating the accelerator with dense matrix multiplications. Modern hardware is exceptionally good at exactly this shape of work, so prefill chews through input at rates orders of magnitude faster than decode emits output.\n\n\"Compute-bound\" means the limiting factor is arithmetic throughput — the chips are genuinely busy multiplying — rather than waiting on memory transfers. This is why a 100,000-token prompt can be ingested in a couple of seconds while generating 100,000 tokens of output would take many minutes: reading is parallel, writing is serial. Whenever you notice that pasting a huge file into a session barely slows the response start, you are seeing prefill parallelism at work."
+      },
+      {
+        "heading": "Prefill builds the KV cache",
+        "body": "Prefill is not just reading — it produces an artifact. For every input token, every layer computes and stores a Key vector and a Value vector: the attention state that later tokens will consult to decide which earlier tokens matter. This per-layer K/V store is the KV cache, and it is the working memory that decode reads on every generated token.\n\nPrompt caching (the API feature) is this artifact made persistent. The provider keys stored K/V state by the exact token prefix; a cache read loads that state instead of recomputing it — valid because same tokens through same weights provably produce identical vectors. The state is order-sensitive: each token's K/V was computed attending to everything before it, so one changed token early in the prompt invalidates all state after it. That is why the harness orders the prompt stable-prefix-first, and why cache reads (about 0.1× input price) save compute, not bandwidth — the tokens still cross the wire."
+      },
+      {
+        "heading": "Why input is cheap and prefill sets time-to-first-token",
+        "body": "The pricing asymmetry — output tokens costing roughly five times input tokens — falls out of the two phases. An input token is one slice of a massively parallel batch computation; an output token requires its own full serial pass through the model. Per token, prefill is simply far cheaper to serve, and the pricing reflects the physics.\n\nPrefill also explains the latency you feel. Time-to-first-token is dominated by how long prefill takes on the uncached part of your prompt: nothing can be generated until the whole input has been read. A long prompt with a warm cache starts answering almost immediately (the K/V for the cached prefix is loaded, only the new suffix prefills for real); the same prompt cold pays full prefill first. So in a Claude Code session, the pause before text starts streaming is the read phase, and the speed of streaming afterwards is the write phase."
+      }
+    ],
+    "resources": [
+      { "label": "Claude platform docs — Prompt caching", "url": "https://docs.claude.com/en/docs/build-with-claude/prompt-caching" },
+      { "label": "Claude platform docs — Glossary", "url": "https://docs.claude.com/en/docs/about-claude/glossary" }
+    ]
+  },
+  "6.3": {
+    "title": "The write phase (decode)",
+    "intro": "After prefill has read the prompt, decode writes the answer — one token at a time, each requiring its own full pass through the model. Decode's serial, memory-hungry nature explains why output tokens cost more, why replies stream instead of appearing at once, and why long outputs dominate wall-clock time.",
+    "sections": [
+      {
+        "heading": "One token at a time, unavoidably",
+        "body": "Generation is autoregressive: the model predicts the next token, appends it to the sequence, and only then can it predict the one after — token n+1 mathematically depends on token n. Unlike prefill, where every input token is known up front and can be processed in parallel, decode has no parallelism to exploit along the sequence. A 2,000-token reply is 2,000 sequential forward passes, full stop.\n\nThis is why responses stream: tokens genuinely come into existence one by one, and sending each as it is produced costs nothing extra. Streaming is not a UI flourish layered on a finished answer — it is a live view of decode. It is also why extended thinking has real cost: thinking tokens are decoded exactly like visible ones, priced as output, and paid for serially before the answer proper begins."
+      },
+      {
+        "heading": "Memory-bandwidth-bound, not compute-bound",
+        "body": "Each decode step does surprisingly little arithmetic — one token's worth — but must read an enormous amount of memory: essentially all the model's (active) weights, plus the accumulated K/V state for every prior token in the context. The accelerator spends most of each step moving bytes from memory rather than multiplying numbers. Decode speed is therefore set by memory bandwidth, the opposite regime from compute-bound prefill.\n\nTwo practical consequences. First, tokens-per-second is roughly constant for a given model and precision — it is a hardware bandwidth budget divided by bytes that must move per token. Second, anything that shrinks the bytes moved speeds decode up: fewer bits per weight (quantization, 6.6) or fewer active parameters per token (MoE, 6.7) both raise tokens-per-second for exactly this reason."
+      },
+      {
+        "heading": "Every step reads the whole KV cache",
+        "body": "Decode does not just read weights; each new token attends over the Keys and Values of every token before it — the entire KV cache that prefill built plus everything decoded so far. The cache grows by one entry per layer per generated token, so long contexts make each decode step read more state and consume more accelerator memory per request.\n\nThis is where the phases connect: prefill's output is decode's input. On a cache hit, the stored prefix K/V is loaded rather than recomputed, the new suffix prefills for real, and decode then reads from the whole assembled state exactly as if everything had been computed fresh. Note what the KV cache is not: it is per-request, ephemeral working state on the serving side (persisted briefly by prompt caching under a 5-minute or 1-hour TTL) — not a transcript, and nothing to do with what Claude Code stores in `~/.claude/`."
+      },
+      {
+        "heading": "Why output costs more and what you can do about it",
+        "body": "The roughly 5× output-to-input price ratio is the two phases expressed in dollars. An input token shares a massively parallel batch; an output token monopolizes a serial pass that reads the whole model. Serving output is intrinsically more expensive per token, on Bedrock and the Anthropic API alike — the ratio travels with the model, whichever door you use.\n\nThe latency split matters for reasoning about sessions: time-to-first-token is prefill, tokens-per-second afterward is decode, and total wall-clock for a verbose reply is dominated by decode. The levers follow directly: constrain output where you can (ask for diffs rather than full files, set `max_tokens` sensibly in scripts), remember thinking is billed as output, and note the asymmetry when budgeting — a Claude Code session's token volume is overwhelmingly input (the resend), but output still claims an outsized share of spend and nearly all of the waiting."
+      }
+    ],
+    "resources": [
+      { "label": "Claude platform docs — Glossary", "url": "https://docs.claude.com/en/docs/about-claude/glossary" }
+    ]
+  },
+  "6.4": {
+    "title": "Architecture basics",
+    "intro": "You do not need to build a transformer to reason about one. Four concepts — tokens, the layer stack, attention, and the output distribution — are enough to explain where the KV cache comes from, why context has a cost, and why the model never literally 'chooses a word'.",
+    "sections": [
+      {
+        "heading": "Tokens, not words",
+        "body": "The model never sees text. A tokenizer first splits your input into tokens — subword chunks averaging around three-quarters of an English word — and maps each to an integer from a fixed vocabulary. Common words are single tokens; rare words, identifiers, and code fragments split into several. This is why token counts, not character counts, govern everything: context window limits, pricing, and rate limits are all denominated in tokens.\n\nEach token ID is then converted to an embedding — a long vector of numbers representing that token's position in a learned space of meaning. From this point on, everything inside the model is vector arithmetic. The practical intuition to keep: dense prose, code, and JSON tokenize differently, and \"how many tokens is this?\" is a real question with a nonobvious answer, not a word count."
+      },
+      {
+        "heading": "A stack of identical layers",
+        "body": "A transformer is dozens of near-identical blocks stacked in sequence, each containing two main parts: an attention mechanism and a feed-forward network (FFN). Every token's vector passes through the full stack, and each layer transforms it a little — mixing in information from other tokens (attention) and then processing the result (FFN, where the bulk of the parameters live).\n\nThe useful mental model: early layers capture surface structure, later layers increasingly abstract relationships, and by the top of the stack each position's vector encodes what should come next. Nothing about this is per-user or stateful — the stack is the same frozen weights for every request, applied fresh each call. Depth (number of layers) and width (vector size) are the two main dials that parameter count is made of."
+      },
+      {
+        "heading": "Attention: which earlier tokens matter",
+        "body": "Attention is the mechanism that lets a token consult its context. For every token, each layer computes three vectors: a Query (what am I looking for?), a Key (what do I offer?), and a Value (what content do I carry?). A token's Query is scored against the Keys of all earlier tokens, and the resulting weights decide how much of each earlier token's Value gets blended into its representation. That is, concretely, how \"the function defined 400 lines ago\" influences the token being processed now.\n\nThe Keys and Values are exactly what the KV cache stores (topic 6.2) — computed once per token per layer, reused by every later token. And because each token attends over all before it, attention work grows with context length: long contexts are expensive not by decree but because there is genuinely more to look at."
+      },
+      {
+        "heading": "The output is a distribution, not a word",
+        "body": "At the top of the stack, the model produces a score for every token in its vocabulary, normalized into a probability distribution: perhaps 62% for one continuation, 20% for another, a long tail for the rest. The model's job ends there. Something must then pick one token from that distribution — that step is sampling, controlled by parameters like temperature (topic 6.8).\n\nThis separation explains two things people find surprising. First, nondeterminism: identical prompts produce identical distributions, but sampling can draw different tokens from them. Second, the granularity of everything downstream: the model commits to one token, the chosen token is appended, and the whole stack runs again for the next one. Every behavior you observe — hedging, code style, stopping — is ultimately this loop of distribution, pick, append, repeat."
+      }
+    ],
+    "resources": [
+      { "label": "Claude platform docs — Glossary", "url": "https://docs.claude.com/en/docs/about-claude/glossary" }
+    ]
+  },
+  "6.5": {
+    "title": "Parameters and model size",
+    "intro": "\"How big is the model?\" hides three separate questions — how many weights it has, how much memory it occupies, and how good it is. Keeping them apart is what lets you reason about cost, speed, and model choice instead of assuming bigger is better.",
+    "sections": [
+      {
+        "heading": "What a parameter count means",
+        "body": "A \"200B model\" has roughly 200 billion learned weights — the numbers adjusted during training that collectively encode everything the model can do. Parameter count is capacity: more weights can store more patterns, more knowledge, more nuanced behavior. It is the single most-quoted number about any model, and the least sufficient on its own.\n\nMemory footprint follows from it mechanically: size ≈ parameters (billions) × bits-per-weight ÷ 8, giving gigabytes. A 200B model at 16 bits per weight is about 400 GB of weights — which is why frontier models cannot fit on a single accelerator and are sharded across many GPUs, loaded once and shared read-only by all requests. Parameter count is a fact about the artifact; everything else (quality, speed, price) is downstream but not determined by it."
+      },
+      {
+        "heading": "The capacity–speed–cost coupling",
+        "body": "Every parameter must be read from memory to produce each output token (with dense models — MoE loosens this, topic 6.7). So parameter count is directly coupled to serving economics: more parameters means more bytes moved per decode step, hence fewer tokens per second, more hardware tied up per request, and a higher price per token. This is why model tiers within a family differ in price by multiples, not percentages.\n\nQuality scales with parameters much less cleanly. Training data quality, training compute, and post-training matter enormously; a newer, well-trained mid-size model frequently outperforms an older giant. Treat parameter count as a strong predictor of cost and latency, and only a rough prior on capability."
+      },
+      {
+        "heading": "Bigger is not automatically better for a task",
+        "body": "The right question is never \"which model is strongest?\" but \"which model is sufficient for this task?\" Reformatting a file, writing a commit message, or classifying log lines does not benefit from frontier-scale capacity — the small model's answer is indistinguishable, arrives faster, and costs a fraction. Conversely, subtle architectural refactors or long-horizon agentic work can fail outright below a capability threshold, making the cheap model the expensive choice once you count retries.\n\nThis is the reasoning behind per-task model selection in Claude Code (`/model`, or routing subagents to a cheaper tier): match capacity to difficulty, per task, rather than picking one model forever. The Claude family's tier ladder (topic 6.9) exists precisely to make that trade explicit."
+      }
+    ],
+    "resources": [
+      { "label": "Claude platform docs — Choosing a model", "url": "https://docs.claude.com/en/docs/about-claude/models/choosing-a-model" }
+    ]
+  },
+  "6.6": {
+    "title": "Quantization",
+    "intro": "Quantization stores each of a model's billions of weights with fewer bits — shrinking memory, usually raising speed, and costing some precision. It is the dial serving providers and local runners alike turn to fit models onto real hardware, and the size formula it plugs into is worth memorizing.",
+    "sections": [
+      {
+        "heading": "Fewer bits per weight",
+        "body": "Models are trained with each weight stored at high precision — typically 16 bits, enough to hold a value like `0.7341828`. Quantization rounds every weight onto a coarser grid so it fits in fewer bits: keep `0.73` in 4 bits instead of the full value in 16. The model does not lose parameters or \"get smaller in intelligence\" — the same weights are simply stored more roughly.\n\nThe classic analogy is JPEG compression. A photo at 100% quality is huge and pixel-perfect; at 80% it is a fraction of the size and indistinguishable; pushed too far it grows visible artifacts. Quantization levels are those quality settings, and — as with JPEG — there is a sweet spot well below maximum precision where the loss is essentially invisible, which is why roughly-4-bit schemes became the practical default across the industry."
+      },
+      {
+        "heading": "The size formula",
+        "body": "Memory footprint is set by exactly two numbers: size (GB) ≈ parameters (billions) × bits-per-weight ÷ 8. The divide-by-8 converts bits to bytes. A 70B model at 16 bits is about 140 GB; the same model at ~4 bits is about 35 GB — a 4× reduction from precision alone, with parameter count untouched.\n\nThis one line lets you reason about any model from its name. It also explains deployment reality at every scale: on a workstation it decides whether a model fits in RAM at all; in a datacenter it decides how many accelerators one replica of a frontier model occupies, and therefore how many concurrent replicas a fleet can run. Remember the weights are not the whole story — the KV cache grows with context on top of them — but weights set the floor."
+      },
+      {
+        "heading": "The quality–memory–speed triangle",
+        "body": "Quantization trades along three axes at once. Memory: fewer bits, smaller footprint — the direct effect. Speed: often better, and not incidentally — decode is memory-bandwidth-bound (topic 6.3), so halving bytes-per-weight roughly halves the data moved per token, raising tokens-per-second. Quality: each rounded weight is now slightly wrong, and while one tiny error is nothing, errors accumulate across billions of weights and millions of multiplications, surfacing as degraded output — more mistakes, weaker reasoning, subtler failures on hard problems.\n\nThe degradation curve is nonlinear: 16→8 bits is typically near-lossless, ~4 bits is the widely-used sweet spot with modest loss, and below that quality falls off a cliff. Smarter schemes flatten the curve further by spending extra bits on the weights that matter most and economizing on the rest — precision allocated unevenly beats uniform rounding."
+      },
+      {
+        "heading": "Why providers quantize, and the parameters-vs-precision rule",
+        "body": "Serving providers quantize for economics: a model at lower precision needs fewer accelerators per replica, serves more requests per machine, and decodes faster. Providers choose operating points that preserve quality on their benchmarks — but the mechanism is worth knowing, because \"the same model\" served at different precisions can genuinely behave slightly differently, and precision is one of several serving choices invisible from the API.\n\nThe most useful decision rule the triangle produces: when a memory budget forces a choice, a bigger model at lower precision usually beats a smaller model at higher precision. Parameters store capability; precision only preserves it. Spending bytes on more weights, stored roughly, tends to win over fewer weights stored exactly — the same logic, at datacenter scale, that shapes which capability-per-dollar points a model family's tiers occupy."
+      }
+    ],
+    "resources": [
+      { "label": "Claude platform docs — Glossary", "url": "https://docs.claude.com/en/docs/about-claude/glossary" }
+    ]
+  },
+  "6.7": {
+    "title": "MoE — mixture of experts",
+    "intro": "Mixture of Experts is the architecture trick that breaks the assumption \"big model = slow model\": a network can hold a huge number of total parameters while only a small fraction do work on any given token. It splits every size-based intuition into two numbers — total and active — and you need both.",
+    "sections": [
+      {
+        "heading": "Many experts, few chosen",
+        "body": "Recall the transformer block: attention plus a feed-forward network (FFN), with the FFN holding most of the parameters. MoE replaces that single FFN with many parallel FFNs — the \"experts\" — plus a tiny router network that, for each token at each layer, picks a small subset (say, the top 2 of 128) to actually run. Every other expert sits idle for that token.\n\nThe result is a model with enormous total capacity — all experts exist and hold learned knowledge — but small per-token compute, since only the chosen few fire. Different tokens route to different experts, so across a batch all the capacity gets exercised, while each individual token travels a cheap path. One caveat for honesty: Anthropic has not published Claude's architecture; MoE is standard frontier-scale design, so treat it as how models of this class generally work, not a confirmed fact about Claude specifically."
+      },
+      {
+        "heading": "Total vs active parameters",
+        "body": "MoE forces a split in the number you used to treat as one. Total parameters count every weight in every expert — this sets memory (all experts must be loaded and resident; the router's choice happens at inference time, per token, far too fast to swap weights in and out) and sets knowledge capacity. Active parameters count the weights that actually compute for one token — this sets speed and per-token serving cost.\n\nA \"large total, small active\" model therefore takes the memory of a large model but generates at the speed of a small one. For fit-style questions (how many GPUs does a replica need?), use total. For speed and cost questions (tokens per second, price per token), use active. Any single-number description of an MoE model is answering only one of those two questions — always ask which."
+      },
+      {
+        "heading": "What MoE changes about cost and latency reasoning",
+        "body": "The economics follow from active parameters. Decode is memory-bandwidth-bound, and per token an MoE moves only the active experts' weights — so it decodes at small-model speed and small-model marginal cost despite big-model capacity. This is a core reason frontier providers can serve highly capable models at prices and latencies that dense models of equal capacity could not sustain, and it bends the capability-per-dollar curve that a tiered model family (topic 6.9) is built on.\n\nWhat MoE complicates is the serving side: experts are spread across GPUs (expert parallelism), tokens must shuffle to whichever GPU holds their chosen expert at each layer, and schedulers prefer batches that keep all experts evenly busy. None of that is visible from the API — you see its effects only in the price and speed."
+      },
+      {
+        "heading": "What MoE does not change",
+        "body": "Everything you learned about the two-phase call survives intact. MoE replaces the FFN, not attention — so the KV cache is built and consumed exactly as before, prefill is still parallel reading and decode still serial writing; the router simply runs per token inside each layer. Routing is deterministic (same tokens, same weights, same expert choices), so prompt caching works unchanged: a cached prefix is just as reusable on an MoE model as on a dense one.\n\nThe stateless-loop story is likewise untouched: weights (all experts included) are loaded once and shared read-only across users, no per-user state survives between calls, and the harness still resends everything each turn. The one-line summary: MoE is a capacity trick on the FFN that leaves attention, the KV cache, and the whole resend-and-cache story exactly as you learned them — it only changes which numbers govern memory versus speed."
+      }
+    ],
+    "resources": [
+      { "label": "Claude platform docs — Glossary", "url": "https://docs.claude.com/en/docs/about-claude/glossary" }
+    ]
+  },
+  "6.8": {
+    "title": "Sampling and stop conditions",
+    "intro": "The model's forward pass ends with a probability distribution, not a word — something must pick a token from it, and something must decide when to stop picking. Those two mechanisms explain why identical prompts differ between runs and why a response can end for four different reasons.",
+    "sections": [
+      {
+        "heading": "The model proposes, sampling disposes",
+        "body": "Each decode step produces probabilities over the entire vocabulary: one continuation at 62%, another at 20%, a long tail of alternatives. Sampling is the draw from that distribution, and it happens once per token, thousands of times per response — every draw a fork where the output could have gone another way.\n\nThis is the root cause of nondeterminism. Two identical requests produce identical distributions (same tokens, same frozen weights), but independent draws can select different tokens, and the first divergence compounds: once one word differs, every subsequent distribution is conditioned on a different prefix. So \"why did I get a different answer to the same prompt?\" has a precise answer — the model was equally uncertain both times; the dice landed differently. Sampling parameters exist to control how loaded those dice are."
+      },
+      {
+        "heading": "Temperature and top-p",
+        "body": "Temperature reshapes the distribution before the draw. Low temperature sharpens it — probability concentrates on the top candidates, and at temperature 0 the draw collapses to always taking the single most likely token, making output essentially deterministic (small serving-side numerical effects can still occasionally vary a token). High temperature flattens it, giving unlikely tokens a real chance: more diverse, more creative, more error-prone.\n\nTop-p (nucleus sampling) trims the candidate pool instead: keep only the most probable tokens whose probabilities sum to p, then sample within that nucleus — cutting off the long tail of junk while preserving variety among plausible options. These are request parameters on the Messages API, identical through Bedrock. Practical guidance: adjust temperature or top-p, not both; low temperature suits deterministic-leaning tasks like code and extraction, higher suits brainstorming. Interactive Claude Code sessions use the harness's chosen settings — this is a lever for API scripting, not a per-turn CLI knob."
+      },
+      {
+        "heading": "Stop conditions and stop reasons",
+        "body": "Decode would happily continue forever, so every response ends because a stop condition fired, and the API tells you which via `stop_reason`. The natural ending is `end_turn`: the model emitted its trained end-of-turn token — it considers the reply complete. `max_tokens` means the hard output ceiling cut generation off mid-thought; the response is truncated, not finished, and treating it as complete is a classic scripting bug. `stop_sequence` means a caller-supplied string appeared and generation halted there — useful for stopping at a delimiter in structured pipelines. And `tool_use` means the model stopped because it is requesting a tool call and expects a result back.\n\nThe first three are model-layer mechanics; the fourth is the hinge the whole agentic loop swings on — a stop that is really a handoff."
+      },
+      {
+        "heading": "Two stops at two layers",
+        "body": "Keep the layers distinct: a model stop ends one decode; a harness stop ends one turn. When Claude Code's model call returns with `stop_reason: tool_use`, that decode is over — but the turn is not. The harness executes the tool, appends the result to the message array, and calls the API again; this can repeat dozens of times. Only when a call comes back with no tool use (`end_turn`, plain text) does the harness conclude the turn and return control to you.\n\nConflating these causes real confusion: \"the model responded\" is ambiguous between \"one API call completed\" and \"Claude finished the task.\" One user turn commonly spans many decodes, each a separate billed API call with its own stop reason — which is also why a single \"do X\" instruction can quietly cost a long chain of calls."
+      }
+    ],
+    "resources": [
+      { "label": "Claude platform docs — Glossary", "url": "https://docs.claude.com/en/docs/about-claude/glossary" },
+      { "label": "Claude API reference — Messages", "url": "https://docs.claude.com/en/api/messages" }
+    ]
+  },
+  "6.9": {
+    "title": "The Claude model family",
+    "intro": "Claude ships as a family of tiers, not a single model — a deliberate capability-cost-speed ladder. The tiers exist so you can match model to task instead of paying frontier prices for routine work; knowing the ladder's shape matters more than any week's specific version numbers.",
+    "sections": [
+      {
+        "heading": "The tier ladder",
+        "body": "The family spans three enduring tiers. Haiku is the fast, inexpensive tier: lowest latency, lowest price per token, built for high-volume and simple tasks. Sonnet is the middle tier: strong capability at moderate cost, the workhorse for most coding and agentic work. Opus is the frontier tier: maximum capability for the hardest reasoning, priced and paced accordingly. Versions within each tier advance over time (and a newer generation's middle tier can overtake an older generation's top tier), but the ladder structure itself is stable.\n\nThe price spread between tiers is multiples — often an order of magnitude between the bottom and the top per token. That spread compounds with the mechanics you already know: every turn resends the whole conversation, so the tier multiplier applies to every token of every resend, not just to new text. Tier choice is the single largest cost lever in the stack."
+      },
+      {
+        "heading": "Choosing per task, not forever",
+        "body": "The ladder is a mechanism, and the mechanism is per-task matching. Ask what the task needs to not fail: reformatting, summarizing, commit messages, and simple classification are Haiku-shaped; everyday feature work, debugging, and multi-step agentic sessions are Sonnet-shaped; deep architectural reasoning and problems where retries are costly justify Opus. Over-provisioning wastes money on every resent token; under-provisioning wastes more when a failed attempt must be redone on a bigger model anyway.\n\nClaude Code exposes this lever directly: `/model` switches mid-session (or model flags/env vars at launch), and subagents can run on a cheaper tier than the main loop — delegating search-and-summarize work to a fast model while the frontier model keeps the main thread. The skill worth having is not knowing the best model; it is habitually asking \"what is the cheapest tier that reliably does this?\""
+      },
+      {
+        "heading": "Availability per provider",
+        "body": "The same weights answer through every door — a given Claude model on Bedrock is the same model as on the Anthropic API; Bedrock is a different entrance, not a different brain. What differs is identity and timing. Anthropic uses model names/aliases; Bedrock uses its own model IDs and inference profiles, and availability varies by AWS region — so the identifier in your `/model` output or env config looks different even when the model is identical.\n\nTiming is the practical delta: new model versions and some API features can arrive on Bedrock later than on the Anthropic API, and a new model may reach some regions before others. So a Bedrock user's ladder can briefly lag the newest rung. When choosing per task, the reasoning is provider-neutral; when checking what you can actually invoke today, check your provider's current model list and your region."
+      }
+    ],
+    "resources": [
+      { "label": "Claude platform docs — Models overview", "url": "https://docs.claude.com/en/docs/about-claude/models/overview" },
+      { "label": "Claude platform docs — Choosing a model", "url": "https://docs.claude.com/en/docs/about-claude/models/choosing-a-model" }
+    ]
+  }
+}

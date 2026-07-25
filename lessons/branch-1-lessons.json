@@ -1,0 +1,146 @@
+{
+  "1.1": {
+    "title": "What Claude Code is",
+    "intro": "Claude Code is easiest to define by what it is not: it is not a chatbot you paste code into, and not an autocomplete plugin. It is a CLI agent — a program that puts a Claude model in a loop with tools and lets it act on your machine.",
+    "sections": [
+      {
+        "heading": "A CLI agent, not a chatbot",
+        "body": "A chatbot produces text; you do the acting. You paste code in, read the answer, copy it back out, run it yourself. Claude Code inverts that: you describe an outcome — \"fix the failing tests\" — and it acts directly. It searches your project, reads the relevant files, edits them, runs the test suite, reads the failures, and edits again.\n\nIt runs in your terminal, launched with `claude` inside a project directory. From there it has what a chatbot never has: your files, your shell, your git state, and any command you could run yourself. That access is the whole difference. The model behind claude.ai and the model behind Claude Code can be the same weights — what changes is that Claude Code wraps the model in machinery that can execute what the model decides."
+      },
+      {
+        "heading": "Not an autocomplete plugin either",
+        "body": "The other common confusion is with inline IDE assistants. Autocomplete-style tools see the file you have open and predict the next few lines — fast, local, single-file. Claude Code sees the whole project and works across it: coordinated edits in several files, running builds, tracing a bug from a stack trace through three modules, committing the result.\n\nClaude Code does ship IDE extensions (VS Code, JetBrains), plus a desktop app and a web surface — but these are front-ends to the same underlying engine, not a different product. The same `CLAUDE.md`, settings, and configuration apply everywhere. The mental model to keep: the product is the agent engine; terminal, IDE, and browser are just windows onto it."
+      },
+      {
+        "heading": "What \"agentic\" means, precisely",
+        "body": "\"Agentic\" is not marketing for \"smart.\" It names a specific mechanism: the model runs in a loop with tools. Each cycle, the model can either reply with text or request an action — read this file, run this command. The harness executes the request, feeds the result back to the model, and the model decides its next step based on what it just learned. Anthropic describes the phases as gather context, take action, verify results.\n\nThe crucial property is the exit condition: the loop ends when the model stops requesting actions — when it judges the task done — not after a fixed number of steps and not when you press a key. That is why one prompt can trigger dozens of tool uses, and why Claude Code can course-correct mid-task: a failed test is just more information fed back into the loop."
+      },
+      {
+        "heading": "The division of labor",
+        "body": "Anthropic's own definition is worth memorizing: Claude Code is \"the agentic harness around Claude.\" The model does exactly one thing — it reads a sequence of messages and produces tokens. It cannot touch a file, run a command, or remember anything on its own. Everything else — executing tools, managing permissions, reading `CLAUDE.md`, saving transcripts, assembling each request — is the harness.\n\nThis split is the key to every deeper topic. When Claude Code seems to \"remember\" your session, that is the harness re-sending history to a stateless model. When it \"takes an action,\" that is the harness executing a structured request the model wrote. Nothing about the agent is magic; it is a text-completion function plus a loop plus tools. Keep the model and the harness separate in your head and the rest of the machinery becomes legible."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Overview", "url": "https://code.claude.com/docs/en/overview" },
+      { "label": "Claude Code docs — How Claude Code works", "url": "https://code.claude.com/docs/en/how-claude-code-works" }
+    ]
+  },
+  "1.2": {
+    "title": "The four layers",
+    "intro": "Everything you type travels down a four-layer stack — CLI → harness → API → model — and every response travels back up. Knowing which layer owns a behavior tells you where to look when something surprises you, and it is the map on which the Bedrock-vs-Anthropic question has a precise answer.",
+    "sections": [
+      {
+        "heading": "The stack at a glance",
+        "body": "The CLI is what you see: the terminal interface. The harness is the machinery underneath: it assembles requests, executes tools, enforces permissions. The API layer is the transport: a stateless HTTP service that accepts a message array and returns generated content. The model is the weights: a function from messages to tokens, running on the provider's hardware.\n\nThe first two layers live entirely on your machine. The last two live on the provider's side. That boundary — between harness and API — is the most important line in the whole system: everything above it is identical no matter how you connect, and everything below it is where providers differ. When you debug, your first question should be \"which layer does this behavior belong to?\""
+      },
+      {
+        "heading": "The CLI: the surface",
+        "body": "The CLI layer is the interaction surface: rendering the conversation, reading your keystrokes, slash commands like `/clear` and `/model`, keyboard shortcuts, mode cycling with Shift+Tab, the permission prompts you approve or reject. It is purely local and purely presentational — no tokens are spent here, and nothing at this layer ever reaches the model directly.\n\nThat last point matters more than it seems. A slash command like `/compact` is not a message to Claude; it is an instruction to the harness, which then decides what (if anything) changes in future requests. Understanding that the CLI talks to the harness, not the model, explains why some commands take effect instantly and locally while your actual prompts cost tokens and take a round-trip."
+      },
+      {
+        "heading": "The harness: the machinery",
+        "body": "The harness is the layer Anthropic names when it defines the product: \"the agentic harness around Claude.\" Its central job, performed on every single model call, is assembling the request — system prompt, tool definitions, `CLAUDE.md`, the full conversation so far, your new message. Its second job is executing what comes back: when the model requests a tool, the harness runs it locally, checks it against your permission rules, and feeds the result into the next request.\n\nThe harness also owns the local files (`~/.claude/`, transcripts, settings), context management and compaction, hooks, skills, and subagents. Every one of those features is provider-neutral: the harness behaves identically whether it is about to call Anthropic directly or AWS Bedrock, because its work happens before and after the API call, never inside it."
+      },
+      {
+        "heading": "The API layer: the swappable door",
+        "body": "The API layer is the only layer that changes when you switch providers. It is a stateless transport: it accepts a complete message array, runs the model over it, streams back content, and forgets you. Anthropic direct, AWS Bedrock, and Google Vertex AI are three doors into essentially the same request/response shape.\n\nWhat differs at this layer: authentication (an Anthropic API key or OAuth login versus AWS credentials and IAM roles, enabled with `CLAUDE_CODE_USE_BEDROCK=1`), model identifiers (Anthropic model names versus Bedrock model IDs and inference profiles), regions, quotas and throttling behavior, and billing. When you hit a rate limit, see a model-not-available error, or wonder why caching behaves differently — that is this layer, and the answer is provider-specific. Nothing above this layer knows or cares which door was used."
+      },
+      {
+        "heading": "The model: the same weights everywhere",
+        "body": "At the bottom sits the model itself: Claude's weights, loaded on provider hardware. It is a pure function — message array in, tokens out. It holds no session, executes no tools, and reads no files; every apparent capability beyond generating text belongs to a layer above it.\n\nThe anti-confusion fact for Bedrock users: it is the same model. Bedrock does not host a modified Claude; the weights answering your request through AWS are the ones Anthropic trained. Differences you observe across providers — availability lag for new models, caching support, quota behavior — are API-layer differences, never model-layer ones.\n\nA quick diagnostic habit: \"it ignored my CLAUDE.md\" → harness. \"Throttling errors at 9am\" → API layer. \"The answer quality changed\" → model choice. \"My shortcut doesn't work\" → CLI. Four layers, four very different investigations."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — How Claude Code works", "url": "https://code.claude.com/docs/en/how-claude-code-works" },
+      { "label": "Claude Code docs — Third-party integrations (Bedrock, Vertex)", "url": "https://code.claude.com/docs/en/third-party-integrations" }
+    ]
+  },
+  "1.3": {
+    "title": "The stateless loop",
+    "intro": "This is the keystone fact of the whole system: the API stores nothing between calls. Every other topic — compaction, caching, cost, \"it forgot\" — is a consequence of it. Get this one right and the rest of the curriculum gets cheap.",
+    "sections": [
+      {
+        "heading": "Nothing lives on the server",
+        "body": "The Claude API is stateless. There is no session object on the server, no conversation ID, no memory of you between calls. Each request is a complete, self-contained array of messages, and the model reads it start to finish as if for the first time — because it is the first time. The same is true on Bedrock: statelessness is a property of the protocol, not of any one provider.\n\nThis feels wrong because your session so obviously \"remembers.\" It refers back to what you said ten minutes ago; it knows which files it already read. But nothing was remembered anywhere. The explanation is one sentence long, and it is the sentence to carry into every later topic: the harness re-sent it. All of it. Again."
+      },
+      {
+        "heading": "Memory is a resend",
+        "body": "On every single model call, the harness rebuilds the entire request from scratch: the system prompt, the tool definitions, your `CLAUDE.md`, and the entire prior transcript — every message, every tool result — with your newest input appended at the end. Then it ships the whole array. Nothing is referenced or implied; everything the model \"knows\" is literally present in that one request.\n\nThis is the harness's central job, and it happens far more often than once per prompt: a single turn in which the model uses tools involves many model calls, each one a full resend of everything so far plus the latest tool result. The conversation the model sees is not stored server-side and retrieved — it is reconstructed and retransmitted, call after call, growing every time."
+      },
+      {
+        "heading": "The proof is on your disk",
+        "body": "You do not have to take this on faith. Every model call is logged to `~/.claude/projects/<slug>/<sessionId>.jsonl`, including the API's own token accounting in a `usage` object. Two patterns in those numbers prove the resend.\n\nFirst, mid-session, genuinely new input (`input_tokens`) is often just a couple of tokens per call — everything else in the request had been sent before and hits the cache. Second, the tell: `cache_read_input_tokens` on call n almost exactly equals the total input of call n−1. Each call re-ships the previous call's entire payload and then some.\n\nThe totals are startling. One real session: 161 model calls, 29.4 million input tokens against 151 thousand output — a 195:1 ratio. Nobody typed 29 million tokens. One growing conversation was re-sent 161 times."
+      },
+      {
+        "heading": "Why it forgets nothing and remembers nothing",
+        "body": "Both halves of the paradox resolve at once. The model remembers nothing: each call is first contact, and any sense of continuity is manufactured by the harness's resend. And the model forgets nothing: as long as a piece of text sits in the resent array, it is fully present — not fading, not \"far back in memory,\" but literally on the page the model is reading right now.\n\nSo when a session genuinely does \"forget\" something, the model is never the culprit. Either the harness dropped or summarized that content out of the array — which is exactly what compaction does when the context window fills — or it was never in the array to begin with. \"It forgot\" is always a statement about what the harness assembled, never about the model's mind."
+      },
+      {
+        "heading": "The consequences: quadratic cost, and why caching exists",
+        "body": "Once you see the resend, the economics follow. A long session is not expensive because it is long — it is expensive because every turn pays for the whole conversation again. Turn n resends turns 1 through n−1, so session cost grows roughly quadratically with length. That, not tidiness, is why compaction must exist: it is the only thing standing between you and a quadratic bill.\n\nPrompt caching is what makes the model survivable at all. In that real session, 96% of all input tokens were cache reads, billed at roughly a tenth of list price. But be precise about what a cache read means: the tokens were still sent over the wire and still counted — the server matched them against a cached prefix and skipped recomputing them. Caching makes the resend affordable. It does not make it stop happening."
+      }
+    ],
+    "resources": [
+      { "label": "Agent SDK docs — The agent loop", "url": "https://code.claude.com/docs/en/agent-sdk/agent-loop" },
+      { "label": "Claude Code docs — Context window (with simulation)", "url": "https://code.claude.com/docs/en/context-window" }
+    ]
+  },
+  "1.4": {
+    "title": "One turn, end to end",
+    "intro": "Follow one keystroke through the whole machine — assembly, send, reply, tool execution, resend — and every other topic in this quiz acquires a fixed address on the path. This is the map the rest of the branches hang from.",
+    "sections": [
+      {
+        "heading": "Step 1 — Assemble: your sentence is not what gets sent",
+        "body": "You type a sentence and press enter. The harness does not send your sentence. It builds a complete request around it: the system prompt (about 4,200 tokens, per Anthropic's context-window docs), the tool definitions, your `CLAUDE.md`, environment info, the entire prior transcript — and, last of all, your new message.\n\nThe ordering is not stylistic; it is load-bearing. The most stable content goes first and the most volatile last, because prompt caching matches a prefix from the start of the request. Keep the front of the request byte-identical across calls and it bills at the cheap cache-read rate; change something early and everything after it recomputes at full price. Prompt assembly, `CLAUDE.md`, skills, and the stability gradient all live here, at this step, inside the harness."
+      },
+      {
+        "heading": "Step 2 — Send and reply: content blocks",
+        "body": "The harness ships the whole array to the API. Nothing is referenced or implied — every token the model will consider is literally in this request, because the API holds no state from the last one.\n\nThe model replies not with a plain string but with a sequence of typed content blocks: `thinking` (reasoning, billed as output), `text` (prose for you), and `tool_use`. A `tool_use` block is the pivotal one — it carries an `id`, a tool `name`, and structured `input`, and it is a request, not an action. The model cannot read a file or run a command; it can only emit a structured description of what it wants done. Whether anything actually happens is entirely up to the harness — which is exactly where permissions get their leverage."
+      },
+      {
+        "heading": "Steps 3–4 — Execute and resend: the inner loop",
+        "body": "If the reply contains a `tool_use` block, the harness executes it locally — reads the file, runs the command — checks it against your permission rules, and appends the output to the conversation as a `tool_result` block. Then it goes back to step 2: same request, now longer. And again, and again.\n\nThis inner loop has no human in it, and it exits on one condition only: the model returns a reply containing no `tool_use` block. Not a step count, not you. That is why \"one turn\" — one press of enter — can be dozens of model calls; 161 in one observed session. Each iteration is a full resend of everything so far, which is where the quadratic cost curve comes from and why a tool that returns a huge output makes every subsequent call in the turn more expensive."
+      },
+      {
+        "heading": "The detail worth a whiteboard: tool results wear your name",
+        "body": "The `tool_result` block goes back into the conversation as a `user` message. The model asked for a file; the answer arrives on the same channel your typed words do. From inside the message array, file contents, command output, and human speech are indistinguishable in kind — one input channel, shared by everything.\n\nThis is why prompt injection via tool results is a protocol-level security category rather than a bug to be patched. If a fetched web page or a file in your repo contains text shaped like instructions, it enters the model's input the same way your instructions do. The defense cannot be \"the model ignores that channel\" — there is no separate channel. It has to come from the harness: permissions, sandboxing, and your own review of what the loop is allowed to touch."
+      },
+      {
+        "heading": "Where everything sits — and where Bedrock differs",
+        "body": "Every quiz branch has an address on this path. Assembly (step 1): prompt layering, `CLAUDE.md`, skills injection, the stability gradient, compaction — all harness, all provider-neutral. The wire (step 2): auth, model IDs, caching economics, rate limits — the API layer. Inside the model call: prefill, decode, sampling, the context window. Execution (step 3): permissions, hooks, MCP, sandboxing — harness again.\n\nThe Bedrock delta is now precise: only the send step changes. On Bedrock the request is authenticated with AWS credentials instead of an Anthropic key, addressed to an AWS endpoint with a Bedrock model ID, and subject to AWS quotas and billing. Everything before the wire and everything after it — assembly, the loop, tool execution, the transcript on disk — is byte-for-byte the same machinery. Bedrock is a different door, not a different building."
+      }
+    ],
+    "resources": [
+      { "label": "Agent SDK docs — The agent loop", "url": "https://code.claude.com/docs/en/agent-sdk/agent-loop" },
+      { "label": "Claude Code docs — Context window", "url": "https://code.claude.com/docs/en/context-window" },
+      { "label": "Claude API docs — Prompt caching", "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching" }
+    ]
+  },
+  "1.5": {
+    "title": "Usage patterns",
+    "intro": "Claude Code is one engine with several distinct ways of driving it. Choosing the right pattern — interactive, plan-first, or headless — is mostly about how much you need to steer, and how much you already trust the task.",
+    "sections": [
+      {
+        "heading": "Interactive sessions: the default",
+        "body": "Run `claude` in a project directory and you get the interactive REPL: a running conversation in which the agent works, asks permission when it needs it, and you steer. You can interrupt at any point — Escape stops the current action; typing a correction mid-turn queues it for the model to read as soon as the current tool call finishes. You iterate rather than restart: \"that's not quite right, the issue is in session handling\" is a normal move, not a failure.\n\nSessions are saved locally as transcripts, so work can span sittings: `claude --continue` resumes the most recent session in the directory, `claude --resume` lets you pick one. Interactive mode is the right default whenever the task is exploratory, ambiguous, or one where you expect to course-correct."
+      },
+      {
+        "heading": "Headless and CI: claude -p",
+        "body": "The `-p` (print) flag turns Claude Code into a one-shot Unix tool: it takes a prompt, runs the full agentic loop non-interactively, prints the result to stdout, and exits. It composes with pipes — `git diff main --name-only | claude -p \"review these files for security issues\"` — which makes it the building block for CI jobs, pre-commit hooks, and batch processing.\n\nBecause there is no human to answer permission prompts, headless runs need permissions decided in advance, via settings files or flags — otherwise the run blocks or the action is refused. Output format flags let you get structured JSON instead of prose for scripting.\n\nThis is where the Bedrock setup quietly shines: auth comes from environment variables and IAM roles (`CLAUDE_CODE_USE_BEDROCK=1` plus AWS credentials), with no interactive `/login` step — exactly what a CI runner wants."
+      },
+      {
+        "heading": "Plan mode: separate thinking from doing",
+        "body": "Plan mode restricts the agent to reading and analysis: it explores the codebase and proposes a plan, but edits nothing until you approve. Enter it with `claude --permission-mode plan`, or cycle modes mid-session with Shift+Tab (default → accept-edits → plan).\n\nThe workflow it enables is two-phase: research first — \"read `src/auth/` and understand how we handle sessions, then plan the OAuth support\" — then review and refine the plan in conversation, then approve and let the agent implement. For complex or risky changes this reliably beats jumping straight to code, because you catch a wrong approach when it costs a paragraph, not a diff across nine files.\n\nMechanically, plan mode is a permission mode — a harness-level constraint on which tools may act — not a different model or a smarter setting. The same loop runs; it is simply not allowed to write."
+      },
+      {
+        "heading": "Claude Code vs claude.ai",
+        "body": "The dividing line is access. A claude.ai chat has only what you paste into it; you carry code in, carry answers out, and execute everything yourself. Claude Code has your repository, your shell, and your git state, and closes the loop itself — edit, run, verify. Rule of thumb: for a question, chat is fine; for a change to a codebase, use the agent.\n\nThe surfaces blur at the edges — claude.ai/code runs Claude Code sessions on cloud VMs, and IDE extensions wrap the same engine — but the question \"does the assistant need to act on my files?\" still sorts almost every case.\n\nOne practical delta for Bedrock users: claude.ai is a subscription product tied to an Anthropic account, while your Claude Code usage bills through AWS as API traffic. The interfaces differ in governance and billing, not in the model behind them."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Quickstart", "url": "https://code.claude.com/docs/en/quickstart" },
+      { "label": "Claude Code docs — Common workflows", "url": "https://code.claude.com/docs/en/common-workflows" },
+      { "label": "Claude Code docs — Non-interactive (headless) mode", "url": "https://code.claude.com/docs/en/headless" }
+    ]
+  }
+}

@@ -1,0 +1,422 @@
+[
+  {
+    "id": "4.1-L2-03",
+    "topic": "4.1",
+    "topicName": "Hooks",
+    "difficulty": 2,
+    "question": "You want a PreToolUse hook to fire before every tool call coming from your GitHub MCP server — and only those. What do you put in the hook's matcher?",
+    "options": [
+      "\"github\" — the harness expands a bare server name to all of its tools",
+      "\"mcp__github__.*\" — a regex matching the full names of every tool that server contributes",
+      "\"*\", plus a separate \"server\" field in the hook entry that filters by origin",
+      "Nothing — MCP tools are matched by listing the server under a \"servers\" key instead of a matcher"
+    ],
+    "correctIndex": 1,
+    "explanation": "Tool-event matchers filter on the tool's full name, and MCP tools are named mcp__<server>__<tool> — so a regex like mcp__github__.* catches every tool one server contributes while ignoring the rest. Matchers accept an exact string (Bash), alternatives (Edit|Write), a regex, or * for everything; there is no special MCP-aware syntax beyond the naming convention itself. That's the elegance: because MCP tools enter the loop as ordinary tools with a structured name, every name-based surface — hook matchers, permission rules, subagent tool lists — can target them with plain string patterns. A bare \"github\" would only match a tool literally named github, and there is no \"server\" field or \"servers\" key in hook config; those options invent machinery the naming convention makes unnecessary."
+  },
+  {
+    "id": "4.1-L2-04",
+    "topic": "4.1",
+    "topicName": "Hooks",
+    "difficulty": 2,
+    "question": "You've written a PostToolUse formatting hook and want every teammate who clones the repository to get it automatically. Where does it go?",
+    "options": [
+      "~/.claude/settings.json — the user-level settings file",
+      ".claude/settings.local.json — the project settings file",
+      ".claude/settings.json in the repo, checked into version control",
+      "A \"hooks\" section in the project's CLAUDE.md"
+    ],
+    "correctIndex": 2,
+    "explanation": "Hooks live in the same tiered settings files as other configuration, and the tier decides who receives them. .claude/settings.json is the project-shared tier: it rides along in version control, so anyone who clones the repo gets the hook. ~/.claude/settings.json is personal and applies to all your projects but never leaves your machine; .claude/settings.local.json is deliberately project-private — the local tier exists precisely for settings you don't want to share. CLAUDE.md is memory, not configuration: text there is injected into the prompt for the model to read, but the harness doesn't parse it for hooks, so a \"hooks section\" would just be asking nicely in a different file. One caveat the sharing tier creates: hooks execute arbitrary commands with your credentials, so treat hooks in a freshly cloned repo like any other code you're about to run — read them before trusting the workspace."
+  },
+  {
+    "id": "4.1-L3-03",
+    "topic": "4.1",
+    "topicName": "Hooks",
+    "difficulty": 3,
+    "question": "A Stop hook checks whether tests were run this session and exits 2 with \"tests have not been run\" on stderr. What happens when Claude tries to finish its turn?",
+    "options": [
+      "Claude is prevented from stopping: the stderr text is fed back to it and it continues working — in this case, presumably running the tests",
+      "The session terminates and the stderr message is displayed to the user as the failure reason",
+      "Nothing changes — Stop fires after the turn is already over, so exit 2 is advisory, like PostToolUse",
+      "The harness re-executes the last tool call so the hook can re-evaluate the session state"
+    ],
+    "correctIndex": 0,
+    "explanation": "Exit 2 is the blocking signal, but what \"blocking\" means depends on what the event was about to do. Stop fires when Claude is about to finish its turn, so blocking it blocks the stopping itself: the model receives the stderr text and must keep going — which makes a Stop hook a deterministic \"you're not done yet\" gate for things like untested changes. The PostToolUse comparison is the tempting near-miss: there, the tool has already executed, so exit-2 feedback is advisory because the action can't un-happen. Stop is different — the stop hasn't happened yet, so it's still preventable, exactly like PreToolUse cancelling a tool call. Non-2 failure codes are the ones surfaced to the user without blocking, and no hook ever causes the harness to re-run a tool. The general contract: exit 2 blocks whatever hasn't happened yet, and stderr becomes the model's explanation."
+  },
+  {
+    "id": "4.1-L3-04",
+    "topic": "4.1",
+    "topicName": "Hooks",
+    "difficulty": 3,
+    "question": "A PreToolUse hook exits 0 and prints JSON with hookSpecificOutput.permissionDecision set to \"allow\" whenever the proposed command is \"npm test\". What is the effect?",
+    "options": [
+      "The preference is recorded but advisory — the user still sees the permission prompt and decides",
+      "None — on exit 0, stdout goes only to the debug log, so the JSON is never read",
+      "The command is added to the permanent allowlist in settings.json for future sessions",
+      "The tool call is auto-approved and runs without a permission prompt — the hook is acting as a policy engine in front of the permission system"
+    ],
+    "correctIndex": 3,
+    "explanation": "PreToolUse hooks have the richest JSON interface: on exit 0, the harness parses stdout for structured decisions, and permissionDecision can be \"allow\" (auto-approve, skipping the prompt), \"deny\" (block), or \"ask\" (escalate to the human). \"Allow\" therefore short-circuits the permission prompt entirely — this is what turns hooks from tripwires into policy engines: approve npm test silently, deny writes to production paths, route everything ambiguous to the user. The advisory option describes \"ask\", not \"allow\". The stdout-to-log rule is the near-miss trap: it's true for plain text output on most events, but decision JSON is exactly the sanctioned exception — the harness parses it. And nothing is persisted: the decision applies to this one tool call, made fresh by your script each time, which is the point — a script can express conditional policy (\"allow only in this directory\") that a static settings.json allowlist rule cannot."
+  },
+  {
+    "id": "4.1-L4-02",
+    "topic": "4.1",
+    "topicName": "Hooks",
+    "difficulty": 4,
+    "question": "Compliance requires that API keys appearing in command output are redacted before the model ever sees them — guaranteed, every time. Which mechanism does this?",
+    "options": [
+      "A PreToolUse hook that rewrites the tool's input to add redaction flags before the command runs",
+      "A PostToolUse hook that, via its JSON output, replaces the tool's result with a redacted version before it enters context",
+      "A PostToolUse hook that exits 2, so its stderr is substituted for the tool's output",
+      "A UserPromptSubmit hook that scrubs secrets from the content being added to the next request"
+    ],
+    "correctIndex": 1,
+    "explanation": "PostToolUse hooks can do more than observe: through the JSON channel, a hook can replace the tool's output entirely — the harness feeds the model the hook's substituted content instead of the raw result. Since the hook runs in the harness after execution but before the result is folded into the next request, redaction is guaranteed at the only seam that sees real output before the model does. Each trap is a real mechanism at the wrong point. PreToolUse input rewriting exists, but it edits what the tool is asked to do — it can't guarantee anything about what the output will contain. Exit 2 on PostToolUse feeds stderr to the model as advisory feedback; it does not replace the tool result, which still lands in context unredacted. UserPromptSubmit injects content at prompt time — the wrong direction entirely: it shapes what you add, not what tools returned. Only the output-replacement channel intercepts the actual payload."
+  },
+  {
+    "id": "4.2-L2-03",
+    "topic": "4.2",
+    "topicName": "Skills",
+    "difficulty": 2,
+    "question": "You've built a /deploy skill, but you never want Claude deciding on its own that the code \"looks ready\" and invoking it mid-task. What do you do?",
+    "options": [
+      "Set user-invocable: false in the skill's frontmatter",
+      "Delete the description field so the model has nothing to match against",
+      "Set disable-model-invocation: true in the frontmatter — only you can trigger it, and its description drops out of the always-loaded listing",
+      "Move it to ~/.claude/commands/ so it becomes a command instead of a skill"
+    ],
+    "correctIndex": 2,
+    "explanation": "By default a skill is invocable two ways: by you (/deploy) and by the model when the description matches the task. disable-model-invocation: true severs the second path — exactly what you want for side-effect workflows like deploying, committing, or messaging, where timing should be a human decision. It has a pleasant side effect: since the model can no longer invoke it, the description no longer needs to sit in the always-loaded listing, so the skill costs zero context until used. user-invocable: false is the mirror image — it makes the skill model-only and hides it from the / menu, the opposite of what's wanted. Deleting the description is a broken version of the right idea: it degrades the skill (no autocomplete documentation, unclear purpose) rather than using the switch built for this. And moving it to commands/ doesn't change the trigger model reliably — commands and skills are merged machinery; the frontmatter switch is the explicit control."
+  },
+  {
+    "id": "4.2-L2-04",
+    "topic": "4.2",
+    "topicName": "Skills",
+    "difficulty": 2,
+    "question": "You have a personal note-taking skill you want available in every project you work on, without sharing it with any team. Where does it live?",
+    "options": [
+      "~/.claude/skills/<name>/SKILL.md — the personal skills directory",
+      ".claude/skills/<name>/SKILL.md, copied into each repository you work in",
+      "An entry in .claude/settings.local.json pointing at the skill file",
+      "A section in ~/.claude/CLAUDE.md describing the procedure"
+    ],
+    "correctIndex": 0,
+    "explanation": "Skills have three homes, and each answers a different \"who gets this?\" Personal skills live in ~/.claude/skills/ and load in every project on your machine — yours everywhere, shared nowhere. Project skills live in .claude/skills/ inside a repo and travel through version control to the whole team; copying a personal skill into every repo would work mechanically but shares it with everyone and leaves you maintaining N copies. Plugin skills arrive namespaced via installed plugins. The other two options put the content at the wrong seams: settings files configure the harness (permissions, hooks, env) and have no skill-registration entry, and ~/.claude/CLAUDE.md — user memory — would inject the procedure into every prompt of every session, paying for it on every turn of the stateless loop. The entire point of a skill is to avoid that: a one-line description per turn, full body only when invoked."
+  },
+  {
+    "id": "4.2-L3-03",
+    "topic": "4.2",
+    "topicName": "Skills",
+    "difficulty": 3,
+    "question": "A colleague says: \"Skills are fully lazy — once Claude finishes the task that triggered a skill, the body unloads and the context is freed again.\" What's the truth?",
+    "options": [
+      "They're right — the harness drops the body from context as soon as the invoking task completes",
+      "They're right in effect — the body is re-read from disk on each turn it's relevant and never stored in the conversation",
+      "They're wrong only for user-invoked skills; model-invoked skill bodies do unload after use",
+      "They're wrong — once invoked, the rendered content enters the conversation as a message and persists for the rest of the session; the lazy part is loading, not lifetime"
+    ],
+    "correctIndex": 3,
+    "explanation": "Progressive disclosure is one-directional. Before invocation, only the description is in context; at invocation, the harness renders the skill into the conversation as a message — and messages don't un-happen. Because the harness resends the entire conversation every turn (the stateless loop), that body is now part of every subsequent request until the session ends, is cleared, or compaction summarizes it away. Nothing selectively removes it when the task completes — the harness has no notion of \"the task is done now.\" The re-read-from-disk option describes a plausible alternative design that isn't how it works: disk is touched once, at load; afterwards the copy in history is what the model sees. And there's no user-vs-model invocation asymmetry in lifetime — both paths inject the same content the same way. Practical consequence: invoking a huge skill early in a long session is a recurring cost, so prefer skills whose entrypoints stay lean and push detail into supporting files."
+  },
+  {
+    "id": "4.2-L3-04",
+    "topic": "4.2",
+    "topicName": "Skills",
+    "difficulty": 3,
+    "question": "A skill's frontmatter includes allowed-tools pre-approving a test command. The skill is invoked, works, and you then send your next message. What is the permission state now?",
+    "options": [
+      "The grant persists to session end, just like the skill's injected text does",
+      "The grant has cleared — allowed-tools pre-approves tools only for the turn that invoked the skill; the skill's text persists, its permissions don't",
+      "The grant was written into settings.json as an allow rule and now applies to future sessions too",
+      "The grant only ever applied inside a forked subagent context, never to the main conversation"
+    ],
+    "correctIndex": 1,
+    "explanation": "allowed-tools is a scoped permission grant: for the turn the skill is invoked, the listed tools run without permission prompts, letting a workflow execute smoothly. But the grant clears on your next message — deliberately, because a permission is a live capability and shouldn't outlive the moment that justified it. This creates the asymmetry the question probes: the skill's rendered text persists in the conversation for the rest of the session (it's a message in history, resent every turn), while the permission attached to it evaporates. Text is inert; permissions are power — they age differently. The settings.json option confuses a transient frontmatter grant with the persistent rules users write by hand or via \"always allow\"; no skill silently edits your settings. And the fork option misattaches a real feature: context: fork controls where a skill runs, not where allowed-tools applies — the grant works for inline skills in the main conversation."
+  },
+  {
+    "id": "4.3-L2-04",
+    "topic": "4.3",
+    "topicName": "Custom commands",
+    "difficulty": 2,
+    "question": "A project contains both .claude/commands/review.md and .claude/skills/review/SKILL.md. What happens when someone types /review?",
+    "options": [
+      "The skill runs — on a name clash, a skill beats a same-named command file",
+      "The command runs — legacy commands load first and shadow skills",
+      "Claude Code refuses to start the command and asks the user to resolve the clash",
+      "Both load — the command body is appended to the skill body in one prompt"
+    ],
+    "correctIndex": 0,
+    "explanation": "Commands and skills have been merged into one machinery: both file shapes create a /review invocation, support the same frontmatter, and expand into the prompt the same way. When both exist under one name, the skill wins — the skill directory is the newer, richer packaging (supporting files, invocation control, tool pre-approval), so it's treated as the authoritative definition, and the legacy command file is simply shadowed. Nothing errors and nothing concatenates: name resolution picks exactly one definition, the same way a project code-review skill replaces the built-in /code-review rather than merging with it. The practical takeaway is the upgrade path: when a flat command file outgrows itself, move review.md to review/SKILL.md — the /review invocation is unchanged, and if you forget to delete the old file, the skill's precedence means the migration still behaves correctly."
+  },
+  {
+    "id": "4.3-L2-05",
+    "topic": "4.3",
+    "topicName": "Custom commands",
+    "difficulty": 2,
+    "question": "You want a /standup command available in every project on your machine, without adding anything to any repository. Where do you create it?",
+    "options": [
+      "As .claude/commands/standup.md in each project you use it in",
+      "As an entry in the \"commands\" array of ~/.claude/settings.json",
+      "As a section in ~/.claude/CLAUDE.md that describes the standup format",
+      "As ~/.claude/commands/standup.md — the user-level commands directory"
+    ],
+    "correctIndex": 3,
+    "explanation": "Custom commands have the same two-level scoping as skills: project-level files in .claude/commands/ travel with the repo to the whole team, while user-level files in ~/.claude/commands/ load in every project on your machine and never leave it. Since the requirement is \"everywhere for me, nowhere for the team,\" the user directory is the answer; per-repo copies would work but leak the command to teammates and multiply maintenance. The settings.json option invents a registration mechanism that doesn't exist — commands are discovered from the filesystem, not declared in settings, which configure harness behavior like permissions and hooks. The CLAUDE.md option confuses memory with templates: text there is injected into every prompt whether or not you're doing standup, costing tokens on every turn of the resend loop, and it creates no /standup invocation. A command file costs nothing until the moment you type its name."
+  },
+  {
+    "id": "4.3-L2-06",
+    "topic": "4.3",
+    "topicName": "Custom commands",
+    "difficulty": 2,
+    "question": "You type \"/fix-issue 417\". By the time the request reaches the model, what does the model actually receive?",
+    "options": [
+      "The command template plus a separate arguments object it must combine",
+      "The command name as a special token the model resolves against its list of known commands",
+      "Only the final expanded prompt, with 417 already substituted where $ARGUMENTS was — the model never sees the template",
+      "The path to the command file, which the model reads with a tool call"
+    ],
+    "correctIndex": 2,
+    "explanation": "Command expansion is finished before the request is assembled. The harness takes the template, substitutes $ARGUMENTS (or $1, $2…) with what you typed, and places the resulting plain text into the turn's message — so the model sees ordinary instructions with \"417\" inline, indistinguishable from text you typed by hand. There is no template-plus-arguments protocol, no command-name token for the model to resolve, and no file for it to fetch; all three distractors imagine the model participating in expansion, when expansion is precisely the step that happens without the model. This is why commands are deterministic in a way instructions aren't: the same invocation always produces the same injected text, because it's string interpolation in the harness, not model interpretation. It also connects to the stateless loop: the model only ever receives assembled text — every extension point, commands included, is ultimately a different way of shaping that text."
+  },
+  {
+    "id": "4.4-L2-03",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 2,
+    "question": "A query tool on one of your MCP servers can return enormous results. What stops a single call from flooding your context window?",
+    "options": [
+      "The harness summarizes oversized results with an extra model call before adding them to context",
+      "Claude Code caps MCP tool output — 25,000 tokens by default, with a warning threshold — raisable via MAX_MCP_OUTPUT_TOKENS",
+      "Nothing — MCP results flow into context in full, so you must trust each server's restraint",
+      "The MCP specification requires servers to paginate all responses to a fixed page size"
+    ],
+    "correctIndex": 1,
+    "explanation": "The harness enforces the limit itself: MCP tool outputs are capped at 25,000 tokens by default, with a warning as outputs approach it (at 10,000), and the ceiling is adjustable through the MAX_MCP_OUTPUT_TOKENS environment variable. The cap matters because of the resend: a tool result doesn't cost its tokens once — it enters the conversation and is retransmitted on every subsequent turn, so one unbounded dump would tax the entire remainder of the session and accelerate compaction. The trust-the-server option describes the world this guard exists to prevent — an external server is exactly the kind of executor whose verbosity you can't control. No summarization model call happens; the harness truncates rather than spending tokens to compress. And the MCP spec doesn't mandate pagination — response discipline varies by server, which is why the protection lives client-side, in the harness, where it protects you regardless of who wrote the server."
+  },
+  {
+    "id": "4.4-L2-04",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 2,
+    "question": "A remote MCP server you've added requires OAuth. How do you authenticate Claude Code to it?",
+    "options": [
+      "Through the /mcp panel, which walks you through the browser OAuth flow and stores the tokens",
+      "By running /login, which authenticates all connected services at once",
+      "By pasting an access token into the project's CLAUDE.md so the model can present it",
+      "You can't — MCP supports only API keys passed as headers, not OAuth"
+    ],
+    "correctIndex": 0,
+    "explanation": "OAuth for remote MCP servers is handled by the /mcp panel: it launches the browser authorization flow, and the resulting tokens are stored for reuse — the harness authenticates to the server on your behalf thereafter. The /login distractor confuses the two auth layers that beginners most often blur: /login authenticates the harness to the model provider (and as a Bedrock user you don't even use it — your model auth comes from AWS credentials), while MCP auth is between the harness and each tool server; the two are independent. Pasting a token into CLAUDE.md is a category error with a security sting: that text goes into the prompt, so the secret would be resent to the model every turn and sit in your transcript — and the harness, not the model, presents MCP credentials anyway. Simpler setups do use API keys via headers or env vars in the server config, but that's an alternative, not the only mechanism."
+  },
+  {
+    "id": "4.4-L3-03",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 3,
+    "question": "The same MCP server name is configured in local scope, in the project's .mcp.json, and in user scope — with different settings in each. Which definition does Claude Code use?",
+    "options": [
+      "The project one — a shared .mcp.json is authoritative over any personal configuration",
+      "The user one — the widest scope resolves last and overrides narrower ones",
+      "The local one — precedence runs local over project over user, most specific first",
+      "None — Claude Code reports the collision and disables the server until you remove the duplicates"
+    ],
+    "correctIndex": 2,
+    "explanation": "MCP scope precedence is local beats project beats user: the most specific, most personal definition wins. The logic is the same as settings-file precedence — the closer a configuration sits to \"this person, this project, right now,\" the more it reflects a deliberate choice, so your local override of a team server (say, pointing it at a staging endpoint) must beat the checked-in .mcp.json, which in turn beats your cross-project default. The project-wins option is the tempting inversion — \"team config is authoritative\" sounds like governance, but it would make personal overrides impossible, and shared config that can't be locally overridden is a trap in any layered system. The user-wins option gets layering backwards: wide scopes are fallbacks, not trumps. And name collisions are resolved silently by precedence, not treated as errors — shadowing is the designed behavior, exactly so a developer can locally rewire a server without editing the shared file."
+  },
+  {
+    "id": "4.4-L3-04",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 3,
+    "question": "You hand-edit your MCP config JSON to add a remote server, giving it just a \"url\" field. On startup, Claude Code skips the server with an error. Why?",
+    "options": [
+      "Remote servers can't be configured via JSON at all — only through claude mcp add",
+      "The URL is missing the SSE endpoint path that remote servers must expose",
+      "The server hasn't been approved yet in the project trust prompt, so it's skipped until you accept it",
+      "The entry lacks a transport declaration — without a \"type\", it's parsed as a stdio server, which expects a command, so the url-only entry is invalid"
+    ],
+    "correctIndex": 3,
+    "explanation": "This is a documented config gotcha: stdio is the default transport, so a JSON entry without a \"type\" field is interpreted as a stdio server — a child process the harness would spawn from a \"command\". An entry with only a \"url\" therefore parses as a stdio server missing its command, and the harness skips it with an error rather than guessing. The fix is declaring the transport explicitly: \"type\": \"http\" (or the spec's alias \"streamable-http\"). The claude mcp add path avoids the trap because --transport http sets the field for you — which is why hand-editing is where this bites; JSON config is fully supported. The SSE option points at a deprecated transport and invents a path requirement. The approval option describes a real mechanism — project-scoped servers do require your acceptance — but that gate produces an approval prompt, not a parse-level skip, and it applies to .mcp.json entries regardless of transport. The error here is structural, not trust-related."
+  },
+  {
+    "id": "4.4-L4-03",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 4,
+    "question": "A GitHub MCP server ships bundled inside a plugin named \"devtools\". You want a permission rule allowing only its create_pr tool. What is the tool's full name?",
+    "options": [
+      "mcp__plugin_devtools_github__create_pr",
+      "mcp__github__create_pr",
+      "mcp__devtools__github__create_pr",
+      "plugin:devtools:github:create_pr"
+    ],
+    "correctIndex": 0,
+    "explanation": "Plugin-bundled MCP servers get an extended naming form: mcp__plugin_<plugin>_<server>__<tool>, so this tool is mcp__plugin_devtools_github__create_pr. The name matters operationally because it's the routing key everywhere names are matched — permission rules, hook matchers, subagent tools lists — and a rule written against the wrong form silently matches nothing, which for an allow rule means unexpected prompts and for a deny rule means a hole in your policy. Each trap is a real convention misapplied. mcp__github__create_pr is exactly right for the same server added directly (not via a plugin) — the era/configuration trap: your rule would break the day the server moves into a plugin. mcp__devtools__github__create_pr misreads the plugin form as just another nesting level, dropping the plugin_ marker that distinguishes the two namespaces. And the colon form borrows plugin skill naming (plugin-name:skill-name) — a genuine Claude Code convention, but for skills, a different extension surface entirely."
+  },
+  {
+    "id": "4.4-L4-04",
+    "topic": "4.4",
+    "topicName": "MCP",
+    "difficulty": 4,
+    "question": "Which of these statements about MCP transports in Claude Code is accurate?",
+    "options": [
+      "SSE is the recommended transport for remote servers; HTTP is retained only for legacy compatibility",
+      "WebSocket servers are added with claude mcp add --transport ws and support the full OAuth flow",
+      "In JSON config, \"streamable-http\" is accepted as an alias for the http transport, matching the MCP specification's own name for it",
+      "stdio entries must declare \"type\": \"stdio\" explicitly, or the harness skips them with an error"
+    ],
+    "correctIndex": 2,
+    "explanation": "The MCP specification calls its HTTP transport \"streamable-http\", and Claude Code accepts that string in JSON config as an alias for http — a small compatibility detail that matters when you're adapting a server's documented config verbatim. Each distractor inverts a true fact. The SSE claim reverses the deprecation arrow: HTTP is the recommended remote transport and SSE is the deprecated one — true in an earlier era, which is what makes it an expert trap. The WebSocket claim is wrong on both counts: ws exists for servers that push events unprompted, but it supports only header-based auth (no OAuth flow) and cannot be added via the --transport flag — it's the most constrained transport, not a first-class peer. The stdio claim inverts the real parsing gotcha: stdio is the default when \"type\" is absent; it's remote entries — a url with no type — that get misparsed as stdio and skipped. Explicit typing is required for remote, optional for local."
+  },
+  {
+    "id": "4.5-L2-03",
+    "topic": "4.5",
+    "topicName": "Subagents",
+    "difficulty": 2,
+    "question": "Claude Code needs to answer a broad question about an unfamiliar codebase without flooding the main conversation. Which built-in subagent fits, and what can it do?",
+    "options": [
+      "There are no built-in subagents — every agent type must be defined in .claude/agents/ first",
+      "Explore — a read-only search agent that sweeps the codebase at a requested thoroughness and returns conclusions, not file dumps",
+      "Plan — which researches the codebase and then executes the implementation plan it writes",
+      "Explore — which searches the codebase and can also apply small fixes it finds along the way"
+    ],
+    "correctIndex": 1,
+    "explanation": "Explore is the built-in read-only search agent: Claude delegates broad codebase questions to it, specifies how hard to look (quick, medium, or very thorough), and receives conclusions while all the intermediate file reading stays in the child's disposable context. Read-only is a load-bearing property, not a limitation — an agent that cannot edit can be granted wide freedom to roam without permission friction, which is what makes automatic delegation to it safe. That's why the \"can also apply small fixes\" variant is wrong: give Explore write access and every delegation becomes a risk decision. The Plan option breaks on its second half — Plan does read-only research during plan mode, keeping exploration out of the main window precisely while the conversation must stay non-mutating; executing plans is the main loop's job after you approve. And built-ins exist alongside custom definitions (general-purpose rounds out the set, with the full tool kit) — .claude/agents/ is for adding roles, not for bootstrapping the feature."
+  },
+  {
+    "id": "4.5-L2-04",
+    "topic": "4.5",
+    "topicName": "Subagents",
+    "difficulty": 2,
+    "question": "A subagent working on a delegated task wants to run a command that requires permission. What happens?",
+    "options": [
+      "The parent agent evaluates the request and approves it on your behalf",
+      "The subagent inherits auto-accept for everything, since delegation implied trust",
+      "The command is silently denied — subagents can only use pre-approved tools",
+      "The permission prompt surfaces in your main session, naming which subagent is asking — a child can't approve anything on your behalf"
+    ],
+    "correctIndex": 3,
+    "explanation": "Permission authority never delegates. A subagent runs its own loop with its own tool calls and its own permission checks, but when a check needs a human decision, the prompt routes to the one place a human is: your main session, labeled with which subagent asked. Neither the parent agent nor the child can stand in for you — models don't approve permissions; the permission system and the user do, and that invariant is exactly what keeps delegation from becoming a privilege-escalation path. The parent-approves option imagines the model in the human's chair. The auto-accept option would mean spawning an agent silently widens what can run unattended — the opposite of how trust boundaries should behave. The silent-denial option overcorrects: subagents aren't restricted to pre-approved tools — undecided cases escalate rather than fail. Custom agents can narrow the surface via a tools allowlist in frontmatter, but that's scoping, not a substitute for your approval."
+  },
+  {
+    "id": "4.5-L3-03",
+    "topic": "4.5",
+    "topicName": "Subagents",
+    "difficulty": 3,
+    "question": "A colleague says: \"Our CLAUDE.md coding rules apply to every delegated search too — all subagents load the project context when they start.\" What's the correction?",
+    "options": [
+      "Not all of them — Explore and Plan skip loading CLAUDE.md to keep research fast and cheap; other subagents do load it",
+      "None needed — the harness injects CLAUDE.md into every agent loop it runs, children included",
+      "The opposite is true — no subagent ever loads CLAUDE.md; project memory belongs exclusively to the main session",
+      "Subagents receive a compacted summary of CLAUDE.md rather than the full file, so the rules apply approximately"
+    ],
+    "correctIndex": 0,
+    "explanation": "Subagent context assembly is per-agent-type, not uniform. Most subagents load your CLAUDE.md files like a fresh session would — but the built-in Explore and Plan agents deliberately skip them: they exist to answer read-only research questions cheaply, and paying the project-memory overhead on every quick search would defeat their purpose. The practical consequence is exactly the trap the colleague is walking into: conventions written in CLAUDE.md (\"we call it FooService, not FooManager\") do not inform Explore's searching or reporting, so a delegated search that depends on those rules needs them restated in the task prompt. The always-injected option is the natural but wrong generalization — assembly is a per-loop decision by the harness, not a global constant. The never-loaded option overcorrects into a different false rule. And no summarization step exists here: agents that load CLAUDE.md load it in full; compaction is a context-lifecycle mechanism, not a memory-distribution one."
+  },
+  {
+    "id": "4.5-L3-04",
+    "topic": "4.5",
+    "topicName": "Subagents",
+    "difficulty": 3,
+    "question": "A subagent's final report is good but raises one follow-up question about what it found. What is the cheapest way to get the answer?",
+    "options": [
+      "Spawn a fresh subagent with the original task prompt plus the follow-up question appended",
+      "Have the parent pull the child's full transcript into its own context and read the answer directly",
+      "Send the follow-up to the same subagent — it can be resumed with its context intact, so it answers from work already done",
+      "Redo the relevant part of the investigation inline in the main conversation"
+    ],
+    "correctIndex": 2,
+    "explanation": "Subagents can be resumed: a follow-up message continues the same child with its context intact, so the question lands on an agent that already holds the investigation in its window — it answers from memory instead of re-exploring. That's the cheapest path by construction: no re-briefing, no repeated tool calls, and the parent still receives only a short reply. Spawning a fresh agent pays the full exploration again — the new child shares nothing with the old one; a subagent's accumulated context is not transferable, only continuable. Pulling the transcript into the parent is the near-miss: the child's transcript does persist on disk, but importing it wholesale dumps the entire investigation into the parent's context — the exact pollution delegation existed to prevent, now taxed on every subsequent resend. Redoing the work inline is that same mistake with extra steps. The pattern to internalize: pass-by-value for results, resume-in-place for follow-ups."
+  },
+  {
+    "id": "4.5-L4-02",
+    "topic": "4.5",
+    "topicName": "Subagents",
+    "difficulty": 4,
+    "question": "A colleague writes .claude/agents/security-reviewer.md, assuming the markdown body adds extra instructions on top of the standard subagent system prompt. What actually happens to that body?",
+    "options": [
+      "It's appended after the default system prompt, so the agent gets both the standard behaviors and the additions",
+      "It replaces the default system prompt entirely — the agent's baseline behavior is only what the body says, plus harness-level basics like environment details",
+      "It's injected as the agent's project memory, the way CLAUDE.md content is, on top of an unchanged system prompt",
+      "It isn't sent to the child at all — the body documents the role for the delegating model, which reads it alongside the description when choosing an agent"
+    ],
+    "correctIndex": 1,
+    "explanation": "The body of a custom agent definition becomes the child's system prompt — replacing, not extending, what a generic agent would get. This is the detail that bites in practice: an author who writes only \"Review code for security issues\" has thrown away the default prompt's operational guidance and gets an oddly bare agent, wondering where the standard behaviors went. If you want them, your body must provide them; a custom definition is a rewrite of the agent's constitution, not an addendum. Each trap relocates the body to an adjacent layer. Appending is the wrong direction — the design intent is full control over the child's identity, which appending can't deliver. The CLAUDE.md option confuses the memory layer (project context in the conversation) with the system-prompt layer (standing instructions). And the delegation-matching option promotes a real mechanism — the description field is what the delegating model reads when choosing — but the body is for the child, never routing metadata."
+  },
+  {
+    "id": "4.6-L3-03",
+    "topic": "4.6",
+    "topicName": "Agent teams & orchestration",
+    "difficulty": 3,
+    "question": "The lead of an agent team spawns a teammate for a task. What does that teammate actually know when it starts?",
+    "options": [
+      "The lead's full conversation history, streamed over as shared team context",
+      "A compacted summary of the lead's session, generated at spawn time",
+      "Only its spawn prompt, in a bare context with no project configuration loaded",
+      "Its spawn prompt plus whatever a fresh session loads — CLAUDE.md, MCP servers, skills — but nothing of the lead's conversation"
+    ],
+    "correctIndex": 3,
+    "explanation": "A teammate is not a child loop inside the lead's session — it is a separate, full Claude Code session. That cuts both ways. Like any fresh session, it loads the project context: CLAUDE.md files, configured MCP servers, skills. But conversation history is per-session state, and the lead's does not carry over; the only bridge is the spawn prompt, so any decision or constraint from the lead's conversation must be restated there. The full-history option imagines a shared team memory that doesn't exist — coordination happens through the explicit machinery of the shared task list and inbox messages, not ambient context. The compaction option borrows a real mechanism from the wrong lifecycle: compaction manages one session's window, not spawn-time briefings. The bare-context option is the near-miss in the other direction — closer to a lean subagent like Explore, whereas teammates pay full session freight, which is also why team cost scales roughly linearly with team size."
+  },
+  {
+    "id": "4.6-L3-04",
+    "topic": "4.6",
+    "topicName": "Agent teams & orchestration",
+    "difficulty": 3,
+    "question": "Which of these workloads actually justifies an agent team rather than plain subagents?",
+    "options": [
+      "Debugging by competing hypotheses, where workers should actively try to disprove each other's theories as they investigate",
+      "A broad read-only sweep of the codebase where only the conclusion needs to come back",
+      "A refactor that must proceed through strictly sequential steps, each building on the last",
+      "A large batch of edits concentrated in one shared file, parallelized for speed"
+    ],
+    "correctIndex": 0,
+    "explanation": "The decision rule is: do the workers need to talk to each other? Teams add peer-to-peer machinery — inbox messaging between any two agents, a shared task list — and that overhead pays off only when the work benefits from lateral discussion. Competing-hypothesis debugging is the canonical case: its value comes from teammates challenging each other's theories mid-flight, which requires the peer channel subagents simply don't have (a subagent can only report to its caller). The broad sweep is textbook subagent work — one conclusion flowing up needs no peers; a team would spend its tokens on coordination nobody consumes. The sequential refactor is wrong for both constructs: with each step gated on the last, a single session outperforms any fan-out. And the shared-file batch fails at the filesystem layer — nothing merges concurrent edits, so parallel writers to one file overwrite each other regardless of topology. Parallelize only what decomposes; add a team only when the parts must negotiate."
+  },
+  {
+    "id": "4.6-L4-02",
+    "topic": "4.6",
+    "topicName": "Agent teams & orchestration",
+    "difficulty": 4,
+    "question": "You want a hard \"definition of done\" for an agent team: no task may be marked completed unless the checks actually pass — enforced, not requested. Which mechanism?",
+    "options": [
+      "A Stop hook in each teammate's session that exits 2 whenever checks haven't passed",
+      "A line in the lead's spawn prompt instructing it to verify every task before accepting completion",
+      "A TaskCompleted hook that runs the checks and blocks the task's transition to completed when they fail",
+      "A TeammateIdle hook that rejects task completion whenever a teammate still has failing checks"
+    ],
+    "correctIndex": 2,
+    "explanation": "Hooks extend into the team layer with events on the coordination machinery itself: TaskCreated and TaskCompleted can block task-state transitions, so a TaskCompleted hook that runs the checks and blocks on failure makes \"done\" a fact the harness verifies, not a claim an agent makes. That's the load-bearing property — deterministic enforcement at the exact transition being guarded. Each trap fails at a specific joint. The Stop hook is real and its exit-2 blocking is real, but it guards the wrong transition: it fires when a session tries to finish a turn, and turn boundaries don't correspond to task completions. The spawn-prompt instruction is asking nicely: probabilistic compliance from the lead, degrading as its context fills — precisely what \"enforced, not requested\" rules out. TeammateIdle is the adjacent-event trap: it fires when a teammate is about to go idle, where exit 2 sends feedback to keep it working; it has no authority over task-state transitions."
+  },
+  {
+    "id": "4.7-L3-02",
+    "topic": "4.7",
+    "topicName": "Dynamic workflows",
+    "difficulty": 3,
+    "question": "Your pipeline script runs an analysis stage and then an implementation stage as separate headless (claude -p) invocations. How should stage two receive stage one's conclusions?",
+    "options": [
+      "Launch stage two with --resume so it continues stage one's session where it left off",
+      "Have stage one write its findings to a file, and have the script hand that file to stage two as input",
+      "Nothing is needed — invocations spawned by one script share a context automatically",
+      "Rely on provider-side session state, which persists between API calls from the same machine"
+    ],
+    "correctIndex": 1,
+    "explanation": "Artifacts through files is the pipeline discipline: stage one distills its work into findings.md, the script passes it forward, and stage two starts a fresh context containing only that distilled input. It's the same pass-by-value principle subagents enforce, applied between whole invocations — each stage gets a small window holding exactly what it needs. The --resume option is the seductive near-miss because it genuinely would give stage two the information: but it continues the session, carrying stage one's entire history — every exploration dead-end included — into stage two's context. You'd pay the full resend and forfeit the clean-slate benefit that made the pipeline worth building; resuming continues conversations, it doesn't hand off results. The automatic-sharing option imagines state the harness doesn't keep between invocations. And provider-side session state doesn't exist at all — the API is stateless on Anthropic and Bedrock alike; every request contains everything the model will know. That statelessness is exactly why the file is the right channel."
+  },
+  {
+    "id": "4.7-L4-02",
+    "topic": "4.7",
+    "topicName": "Dynamic workflows",
+    "difficulty": 4,
+    "question": "A colleague argues: \"Choosing a scripted pipeline means giving up model judgment — once the orchestration is code, every decision has to be pre-coded.\" What's the accurate picture?",
+    "options": [
+      "They're right — headless claude -p invocations run without the Agent tool, so no delegation can happen inside a stage",
+      "They're right unless you build on the Agent SDK, which is the only integration point where scripted and model-driven orchestration can mix",
+      "They're wrong, because the script itself can call the model to make its gating decisions — which keeps the pipeline fully deterministic while adding judgment",
+      "They're wrong — the strongest pattern is a deterministic skeleton with a dynamic interior: the script fixes stages and gates, while within each stage the model retains full agency, including spawning subagents as it sees fit"
+    ],
+    "correctIndex": 3,
+    "explanation": "Scripted orchestration constrains the structure between stages, not the behavior within them. Each stage is a complete agent loop: inside it, the model plans, uses tools, and delegates to subagents exactly as it would interactively. The hybrid is the recommended architecture because the layers answer different needs — code where you need guarantees (ordering, retries, gates on real exit codes), judgment where you need adaptation. Option A invents a restriction: headless mode changes the interface, not the capability set — delegation works under -p. Option B overstates a real tool into exclusivity: the SDK is one way to build orchestrators, but a shell script driving claude -p mixes the layers just as legitimately. Option C is the subtle one: routing gating decisions through a model call makes the gates probabilistic, surrendering exactly the determinism that justified scripting the skeleton — judgment belongs inside stages; gates should stay code."
+  }
+]

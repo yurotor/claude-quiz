@@ -1,0 +1,302 @@
+[
+  {
+    "id": "1.1-L1-01",
+    "topic": "1.1",
+    "topicName": "What Claude Code is",
+    "difficulty": 1,
+    "question": "At the most basic level, what is Claude Code?",
+    "options": [
+      "An IDE plugin that adds AI autocomplete inside editors like VS Code",
+      "A web chatbot tuned specifically for programming questions",
+      "A terminal-based agentic tool that lets a Claude model read files, run commands, and edit code in your project",
+      "A local runtime that downloads Claude's model weights and runs them on your machine"
+    ],
+    "correctIndex": 2,
+    "explanation": "Claude Code is a CLI agent — Anthropic's own docs define it as \"the agentic harness around Claude.\" The model never runs on your machine: whether you connect through the Anthropic API or AWS Bedrock, the weights stay server-side, and what's installed locally is the harness that assembles requests, executes tools (reading files, running shell commands), and loops until the task is done. That rules out the \"local runtime\" option. It isn't autocomplete either — IDE integrations exist, but they're front-ends to the same terminal agent, not inline suggestion engines. And unlike a web chatbot, its defining feature is agency over your actual files and shell, not a chat window that happens to know code."
+  },
+  {
+    "id": "1.1-L1-02",
+    "topic": "1.1",
+    "topicName": "What Claude Code is",
+    "difficulty": 1,
+    "question": "Claude Code is often described as \"agentic.\" What does that specifically mean?",
+    "options": [
+      "It works in a loop — deciding on actions, using tools, observing results, and continuing until the task is done",
+      "It acts fully autonomously, never asking the user for permission",
+      "It keeps a persistent memory of you and your projects across all sessions",
+      "It coordinates several different models simultaneously to answer faster"
+    ],
+    "correctIndex": 0,
+    "explanation": "\"Agentic\" means model-in-a-loop: the model proposes an action (a tool call), the harness executes it, the result goes back in, and the cycle repeats until the model decides it's finished. That's categorically different from a chatbot's one-question-one-answer exchange. It does not mean unsupervised — a permission system gates risky actions, and you can interrupt at any time. Nor does it mean memory: the API is stateless, so anything the agent \"remembers\" was either re-sent by the harness in the next request or re-read from disk files like CLAUDE.md. And it's one model driving one loop, not a committee — subagents exist, but each is simply another instance of the same loop."
+  },
+  {
+    "id": "1.1-L2-01",
+    "topic": "1.1",
+    "topicName": "What Claude Code is",
+    "difficulty": 2,
+    "question": "You ask the exact same Claude model the same coding question in claude.ai chat and in Claude Code. What is fundamentally different between the two?",
+    "options": [
+      "Claude Code uses a special code-tuned variant of the model",
+      "The harness — Claude Code wraps the same model with tools, local file access, and an agent loop",
+      "Claude Code gets a much larger context window for the same model",
+      "claude.ai reasons more deeply because it isn't constrained by a terminal"
+    ],
+    "correctIndex": 1,
+    "explanation": "The same model weights answer in both places — there is no secret \"code model\" behind the CLI. What differs is everything around the model: Claude Code surrounds it with tool definitions, your project files, a permission system, and a loop that executes actions locally. A useful mental model: the model is a pure function from a message array to output tokens, and all the interesting engineering — files, tools, memory, your terminal — lives on the harness side. The context window is a property of the model and API, not of the surface you use, so that distractor fails. This framing matters on Bedrock too: switching providers changes the door you call the model through, never the harness or the weights."
+  },
+  {
+    "id": "1.2-L1-01",
+    "topic": "1.2",
+    "topicName": "The four layers",
+    "difficulty": 1,
+    "question": "In the four-layer picture — CLI, harness, API, model — which layer actually reads your files and runs your shell commands?",
+    "options": [
+      "The model, which has direct sandboxed access to your filesystem",
+      "The API layer, which proxies filesystem calls back to your machine",
+      "The CLI, which gathers all file contents before anything is sent",
+      "The harness, which executes tool calls locally and sends the results back to the model"
+    ],
+    "correctIndex": 3,
+    "explanation": "The model can only emit structured text — a tool_use block saying, in effect, \"please run this command.\" It has no hands. The harness on your machine reads that block, performs the action locally, and appends the output as a tool_result in the next request. The API layer is pure transport: it carries message arrays back and forth and never touches your disk — which is also why this works identically on AWS Bedrock and the Anthropic API. The CLI distractor fails because nothing is gathered up front; files enter the conversation only when the model asks for them mid-loop. Keeping execution in the harness is the whole trick that turns a stateless text-completion function into something that appears to work in your repo."
+  },
+  {
+    "id": "1.2-L1-02",
+    "topic": "1.2",
+    "topicName": "The four layers",
+    "difficulty": 1,
+    "question": "You type a prompt into Claude Code and press enter. Which sequence correctly describes the path it takes?",
+    "options": [
+      "The CLI captures your input → the harness assembles a full request around it → the API transports that request → the model generates tokens",
+      "The CLI sends your text straight to the model → the model asks the harness for any context it needs → the API logs the exchange",
+      "The harness forwards your text to the CLI → the API assembles the request → the model generates a reply",
+      "The API captures your input → the harness drafts a reply → the model verifies and returns it"
+    ],
+    "correctIndex": 0,
+    "explanation": "Each layer has one job. The CLI is the terminal surface that captures input and renders output. The harness does the heavy lifting: it wraps your sentence in a complete request — system prompt, tool definitions, CLAUDE.md, environment info, and the entire prior transcript, with your new message last. The API (Anthropic direct, or Bedrock as a different door to the same model) transports that array. The model turns it into tokens. The key correction to the second option: the model never \"asks for context\" up front — context is pushed by the harness in the request, not pulled by the model. Because the API is stateless, nothing can be implied or referenced; everything the model knows must be literally present in that assembled request."
+  },
+  {
+    "id": "1.2-L2-01",
+    "topic": "1.2",
+    "topicName": "The four layers",
+    "difficulty": 2,
+    "question": "Your team switches Claude Code from the Anthropic API to AWS Bedrock. Which of the four layers actually changes?",
+    "options": [
+      "The harness and the API layer — Bedrock ships its own agent loop",
+      "The model layer — Bedrock serves a retrained AWS variant of Claude",
+      "Only the API layer — auth, endpoint, and model IDs change; the CLI, harness, and model weights stay the same",
+      "All four layers, which is why Bedrock sessions behave noticeably differently"
+    ],
+    "correctIndex": 2,
+    "explanation": "Bedrock is a different door to the same model. The weights AWS serves are the same Claude weights Anthropic serves — not a retrained variant. The CLI and harness are the identical binary on your machine, running the identical loop, prompt assembly, and tool execution. What changes is confined to the API layer: authentication comes from AWS credentials and IAM (enabled via CLAUDE_CODE_USE_BEDROCK) instead of /login or an Anthropic API key, the endpoint is regional AWS infrastructure, and models are addressed by Bedrock model IDs rather than Anthropic model names. Practical deltas that do exist — feature lag, quotas, billing through AWS — are all properties of that one layer, not evidence that the machinery above or below it changed."
+  },
+  {
+    "id": "1.2-L2-02",
+    "topic": "1.2",
+    "topicName": "The four layers",
+    "difficulty": 2,
+    "question": "The contents of your project's CLAUDE.md are in the model's context every single turn. Which layer put them there, and how?",
+    "options": [
+      "The model reads it with a file tool at the start of each session",
+      "The harness injects it into the request it assembles on every call",
+      "The API server loads it from your repository once you authenticate",
+      "The CLI uploads it once at startup and the server pins it to your session"
+    ],
+    "correctIndex": 1,
+    "explanation": "Prompt assembly is a harness job. On every model call, the harness rebuilds the request from scratch — system prompt, tool definitions, CLAUDE.md, environment info, then the transcript — and ships the whole thing. The \"uploaded once and pinned\" option is the instructive wrong answer: it would require server-side session state, and the API is stateless — nothing persists between calls, so there is nowhere to pin anything. That's exactly why CLAUDE.md must be re-sent every time, and why the harness places it in the stable early portion of the request, where prompt caching absorbs the repeated cost. The API never touches your disk (true on Bedrock and Anthropic alike), and the model doesn't need a tool call for it — the content arrives pre-injected."
+  },
+  {
+    "id": "1.3-L2-01",
+    "topic": "1.3",
+    "topicName": "The stateless loop",
+    "difficulty": 2,
+    "question": "A colleague says: \"Claude Code still knows what I told it twenty minutes ago, so the server must be keeping our session history somewhere.\" What's the correction?",
+    "options": [
+      "No correction needed — the server holds an open session keyed by a conversation ID",
+      "Correct in effect — the prompt cache retains the conversation between calls",
+      "Wrong — the model's weights are temporarily fine-tuned on your session as it runs",
+      "Wrong — the harness re-sends the entire conversation with every call; the API stores no session state"
+    ],
+    "correctIndex": 3,
+    "explanation": "This is the keystone fact of the whole system: the Claude API is stateless. There is no server-side session, no conversation ID, no memory of you. Each request is a complete, self-contained message array, and the model reads it as if for the first time — because it is the first time. When the session \"remembers,\" nothing was remembered; the harness re-sent all of it. The cache option is the seductive distractor: prompt caching does exist, but it's a cost-and-latency optimization layered over a resend that still happens — it is not storage standing in for memory. Weights never change during inference. Every downstream topic — compaction, caching economics, why long sessions get expensive — hangs off this one fact."
+  },
+  {
+    "id": "1.3-L2-02",
+    "topic": "1.3",
+    "topicName": "The stateless loop",
+    "difficulty": 2,
+    "question": "Between two consecutive model calls in your Claude Code session, what conversational state does the API keep on the server?",
+    "options": [
+      "None — each request must carry the complete conversation; there is no session or conversation ID",
+      "The full history, stored under your session ID until the session ends",
+      "A rolling summary of the conversation, refreshed after each call",
+      "The system prompt and tool definitions, so only the messages need re-sending"
+    ],
+    "correctIndex": 0,
+    "explanation": "Nothing conversational survives between calls. Every request stands alone: system prompt, tool definitions, and the full message history all travel again, every time. The only server-side artifact is the short-lived prompt cache — stored attention state over a request prefix — and that is a compute shortcut, not memory: if it expires, nothing is lost, because the harness was going to resend everything anyway. The last option is a common half-belief worth killing: even the system prompt and tool schemas are re-sent on every call, which is precisely why their stability matters so much for caching. This holds identically on AWS Bedrock and the Anthropic API — statelessness is a property of the protocol, not of the provider."
+  },
+  {
+    "id": "1.3-L3-01",
+    "topic": "1.3",
+    "topicName": "The stateless loop",
+    "difficulty": 3,
+    "question": "Mid-session, a model call reports cache_read_input_tokens: 120,000. A colleague concludes those tokens \"weren't sent to the API this time.\" What actually happened?",
+    "options": [
+      "The colleague is right — cache reads mean those tokens were skipped on the wire",
+      "The tokens were served from a local cache in ~/.claude instead of being uploaded",
+      "They were sent in full; they matched a server-side cached prefix, so they were not recomputed and billed at roughly 0.1× the input rate",
+      "Cache reads count output tokens the model reused from one of its previous replies"
+    ],
+    "correctIndex": 2,
+    "explanation": "A cache read does not mean the tokens weren't sent — this is the most common misreading of the usage numbers. The full prefix crosses the wire on every single call; the server matches it against a cached prefix (stored attention state) and skips recomputing it, billing at about a tenth of the normal input price. You save money and latency, never bandwidth. The cache lives server-side and has nothing to do with ~/.claude, which holds transcripts, not model state. This is the correct way to reconcile caching with the stateless loop: the resend still happens in full — caching is what makes the resend affordable, not what makes it unnecessary. In real sessions, cache reads routinely cover over 90% of all input tokens."
+  },
+  {
+    "id": "1.3-L3-02",
+    "topic": "1.3",
+    "topicName": "The stateless loop",
+    "difficulty": 3,
+    "question": "A colleague claims: \"Long sessions cost more, but only linearly — each turn just adds its own tokens to the bill.\" What's wrong with that?",
+    "options": [
+      "Nothing — pricing is per token, so total cost is linear in what you type",
+      "Cost is actually near-flat, because caching makes re-sent tokens free",
+      "Cost tracks output tokens, and output stays roughly constant per turn",
+      "Every call re-sends the whole conversation so far, so session cost grows roughly quadratically with length"
+    ],
+    "correctIndex": 3,
+    "explanation": "Turn n doesn't pay for turn n — it pays for turns 1 through n, again. Each call costs roughly the current conversation size, so a session of n turns costs on the order of n². Real transcript accounting makes this vivid: one observed session sent 29.4 million input tokens against 151 thousand output — a 195:1 ratio — because one growing conversation was re-sent 161 times. Caching blunts the price (cached prefix tokens bill at ~0.1×) but does not zero it, so the \"free\" distractor fails; and input, not output, dominates the bill, so the output distractor fails too. This quadratic growth is the real reason compaction must exist. On Bedrock the arithmetic is identical — the same resend, billed through AWS."
+  },
+  {
+    "id": "1.3-L3-03",
+    "topic": "1.3",
+    "topicName": "The stateless loop",
+    "difficulty": 3,
+    "question": "In your session's token accounting, call 7's total input was 52,410 tokens, and call 8 reports cache_read_input_tokens: 52,408. What does that near-match demonstrate?",
+    "options": [
+      "A rounding bug in the token counter, consistently off by two",
+      "The resend: each call re-ships the previous call's entire payload as its now-cached prefix, then appends new content",
+      "The server truncated two tokens to keep the request inside the context window",
+      "Two tokens of the system prompt are randomized on every call by design"
+    ],
+    "correctIndex": 1,
+    "explanation": "This correspondence — cache_read on call n almost exactly equals total input on call n−1 — is the statelessness \"tell,\" and it's visible in your own transcripts under ~/.claude. It means everything shipped in the previous call was shipped again, matched the server-side cache as a prefix, and had the new tokens (a tool result, your next message) appended after it. The off-by-a-couple isn't noise or a bug; it's the boundary between the cached prefix and the fresh tail. This is the fastest way to show a skeptical colleague, rather than tell them, that the harness re-sends the whole conversation every call: the API's own accounting exposes the resend, token by token, call after call."
+  },
+  {
+    "id": "1.3-L3-04",
+    "topic": "1.3",
+    "topicName": "The stateless loop",
+    "difficulty": 3,
+    "question": "A colleague says: \"Compaction dropped some early details from our context, but the model saw them earlier in the session, so it can still recall them if it really needs to.\" What's wrong with that?",
+    "options": [
+      "Each call is a first reading — anything not in the current request simply doesn't exist for the model, and there is nothing server-side to recall from",
+      "Nothing — the server-side KV cache retains earlier turns even after compaction",
+      "It's mostly right, but recall becomes slower and less reliable for dropped content",
+      "It's only wrong on Bedrock; the Anthropic API keeps a session backup for recovery"
+    ],
+    "correctIndex": 0,
+    "explanation": "The model forgets nothing and remembers nothing: it knows exactly what is in the current request — no more, no less. \"Saw it earlier\" is meaningless to a stateless API, because each call is read start to finish as if for the first time. If compaction's summary omitted a detail, the only ways back are re-reading the file, consulting the transcript on disk, or you restating it. The KV-cache distractor is the subtle one: the cache stores attention state for a prefix that is still being re-sent — once compaction rewrites the conversation, the old prefix is no longer sent, and the cache is irrelevant to recall. And no provider differs here: statelessness is a property of the protocol on Bedrock and Anthropic alike."
+  },
+  {
+    "id": "1.4-L3-01",
+    "topic": "1.4",
+    "topicName": "One turn, end to end",
+    "difficulty": 3,
+    "question": "Within a single turn, the agent loop runs model call after model call with no human in it. What actually terminates the loop and returns control to you?",
+    "options": [
+      "The harness reaching its maximum tool-call count for the turn",
+      "You pressing enter to acknowledge the last tool result",
+      "The model returning a reply that contains no tool_use blocks",
+      "The API closing the stream after a fixed time budget per turn"
+    ],
+    "correctIndex": 2,
+    "explanation": "The loop's exit condition belongs to the model: as long as each reply contains a tool_use block, the harness executes the tool, appends the result, and re-sends the whole (now longer) array. Only when a reply arrives with no tool request does the turn end and the prompt return to you. That's why one typed sentence can trigger dozens of model calls — 161 in one observed session — each one a full resend of everything so far. Caps like maxTurns and budget limits do exist, but they are emergency brakes, not the normal exit; the tool-count distractor mistakes the backstop for the mechanism. The user never mediates mid-loop either — the whole point of an agentic turn is that tool round-trips need no acknowledgment."
+  },
+  {
+    "id": "1.4-L3-02",
+    "topic": "1.4",
+    "topicName": "One turn, end to end",
+    "difficulty": 3,
+    "question": "The harness runs a tool the model requested and sends the output back. What role does that tool_result carry in the message array, and why does it matter?",
+    "options": [
+      "role \"assistant\" — so the model recognizes its own tool output; it matters mainly for billing",
+      "role \"user\" — tool output and human speech share one input channel, which is why prompt injection via tool results is a structural risk, not a bug",
+      "role \"system\" — the result is appended to the system prompt for stability",
+      "role \"tool\" — a dedicated channel kept isolated from user input"
+    ],
+    "correctIndex": 1,
+    "explanation": "The tool_result block goes back into the conversation as a user message, keyed to the tool_use id. The model asks for a file; the answer arrives wearing your name. There is no separate \"tool\" role in the Messages API — from inside the message array, file contents, command output, and genuine human instructions all flow through the same input channel. That's the structural reason prompt injection through tool results is a real security category rather than an implementation bug: text a webpage or file happens to contain sits in the same channel as your instructions, and nothing at the protocol level distinguishes them. Appending to the system prompt would also wreck the cached stable prefix — results belong at the volatile end of the array."
+  },
+  {
+    "id": "1.4-L3-03",
+    "topic": "1.4",
+    "topicName": "One turn, end to end",
+    "difficulty": 3,
+    "question": "In the assembled request, the harness orders content roughly as: tool definitions → system prompt → CLAUDE.md and environment info → prior transcript → your newest message. Why is that ordering load-bearing rather than cosmetic?",
+    "options": [
+      "The model weighs earlier tokens more heavily, so standing instructions must come first",
+      "The API rejects requests where messages precede the system prompt",
+      "It keeps transcripts readable for humans debugging a session",
+      "Prompt caching matches prefixes — stable content first means the bulk of every resend hits cache; volatile content early would invalidate it on every call"
+    ],
+    "correctIndex": 3,
+    "explanation": "This is the stability gradient: most stable first, most volatile last. Prompt caching matches from the very start of the request forward, so anything that changes early invalidates the cache for everything after it. Put a timestamp in the system prompt or reorder the tool list per call, and every request bills at full input price instead of the ~0.1× cache-read tier — a tenfold difference on the bulk of your tokens. Since the stateless loop re-sends the entire conversation on every call, and cache reads typically cover over 90% of input, this ordering is what keeps the resend economical. Attention doesn't privilege early tokens the way the first distractor implies, and the API enforces no such ordering — the harness chooses it because the economics demand it."
+  },
+  {
+    "id": "1.4-L3-04",
+    "topic": "1.4",
+    "topicName": "One turn, end to end",
+    "difficulty": 3,
+    "question": "You run Claude Code against AWS Bedrock. Tracing one turn end to end — prompt assembly, API call, response blocks, tool execution, resend — where does Bedrock actually differ from Anthropic direct?",
+    "options": [
+      "Only at the API call: endpoint, AWS auth, and model IDs differ; assembly, the loop, and tool execution are harness-local and identical",
+      "Tool execution moves into an AWS-managed sandbox instead of your machine",
+      "Bedrock returns response blocks in an AWS-specific format that changes the loop logic",
+      "Bedrock keeps session state server-side, so resends only need to carry new messages"
+    ],
+    "correctIndex": 0,
+    "explanation": "Walk the turn and almost every stage is on your machine: the harness assembles the request, executes tool_use blocks locally, appends tool_result messages, and re-sends the growing array. None of that knows or cares which provider is on the other end. The only stage that changes is the API call itself — AWS credentials and IAM instead of an Anthropic key, a regional AWS endpoint, and Bedrock model IDs — while the payload remains the same Anthropic-shaped message array with the same content blocks (thinking, text, tool_use) coming back. The last distractor is the one to stamp out: no provider keeps conversational state between calls. Statelessness, and therefore the full resend, is a property of the protocol — Bedrock is a different door to the same model."
+  },
+  {
+    "id": "1.5-L1-01",
+    "topic": "1.5",
+    "topicName": "Usage patterns",
+    "difficulty": 1,
+    "question": "When is Claude Code the better choice over claude.ai chat for a task?",
+    "options": [
+      "Whenever you need the smartest model, since chat only serves smaller ones",
+      "When the work lives in your repository — reading and editing files, running tests and commands — because the harness can act locally",
+      "Only when you're offline, since Claude Code doesn't need the internet",
+      "When you need the model to automatically remember all your previous conversations"
+    ],
+    "correctIndex": 1,
+    "explanation": "The deciding factor is agency, not intelligence. The same Claude models are available through both surfaces, so \"smarter model\" is not the differentiator. Claude Code earns its place when the task involves your actual codebase: the harness reads files, edits them, runs tests, and iterates on real command output — things a browser chat can only do through copy-paste. It is not an offline tool: the model runs remotely whether you reach it via the Anthropic API or AWS Bedrock; only tool execution is local. And neither surface gives the model true memory — the API is stateless in both cases; claude.ai's apparent continuity and Claude Code's session history are both harness-side conveniences layered over the same resend mechanics."
+  },
+  {
+    "id": "1.5-L2-01",
+    "topic": "1.5",
+    "topicName": "Usage patterns",
+    "difficulty": 2,
+    "question": "What does running `claude -p \"summarize the failing tests\"` do?",
+    "options": [
+      "Opens plan mode with that prompt preloaded for review",
+      "Starts an interactive session pinned to a saved project profile",
+      "Runs headless: executes the prompt non-interactively, prints the result to stdout, and exits — the pattern used in CI and scripts",
+      "Queues the prompt to a background session you can resume later"
+    ],
+    "correctIndex": 2,
+    "explanation": "The -p (print) flag is headless mode: no interactive UI, one prompt in, output to stdout, then exit — which makes Claude Code scriptable and pipeable, and is the standard way to run it in CI. Crucially, it is not a dumber mode: the same agent loop runs underneath, including tool use, subject to your permission configuration — the difference is the absence of a human at the terminal, which is why permission setup matters more in CI. Plan mode is a separate interactive mode, and resuming past sessions is what --resume and --continue are for, so those distractors name real features in the wrong place. For a Bedrock shop, headless runs just need AWS credentials and the Bedrock env configuration present in the CI environment — there's no /login step."
+  },
+  {
+    "id": "1.5-L2-02",
+    "topic": "1.5",
+    "topicName": "Usage patterns",
+    "difficulty": 2,
+    "question": "You're about to ask for a risky multi-file refactor, so you switch to plan mode first. What does plan mode change about the workflow?",
+    "options": [
+      "It routes exploration to a cheaper model and edits to a stronger one",
+      "It disables all tools so the model reasons purely from the conversation",
+      "It executes the refactor on a temporary branch, then asks whether to merge",
+      "The model can still research — read files, search the codebase — but must present a plan for your approval before making any edits"
+    ],
+    "correctIndex": 3,
+    "explanation": "Plan mode is a permission posture, not a different engine: the loop runs exactly as always, but the harness holds back mutating tools (edits, arbitrary commands) while leaving read-only research available. The model explores your codebase, then presents a plan you explicitly approve before any change lands. That approval gate is the point — for large or risky changes, you review intent before execution, instead of reviewing diffs after. The \"disables all tools\" distractor overshoots: a plan built without reading the code would be worthless, so read tools stay on. Model selection is untouched, and no branches are created — version-control isolation is something you or your workflow add separately. Mechanically it's the same stateless loop with a harness-side gate on which tool calls get executed."
+  }
+]

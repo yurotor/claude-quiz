@@ -1,0 +1,392 @@
+[
+  {
+    "id": "3.1-L2-01",
+    "topic": "3.1",
+    "topicName": "Prompt assembly",
+    "difficulty": 2,
+    "question": "The harness assembles a fresh API request every model call. In the canonical assembly order, which piece lands LAST?",
+    "options": [
+      "The tool definitions, so the model reads them with the freshest context",
+      "The system prompt, because instructions should be closest to the answer",
+      "The current turn's newest content — your latest message or tool result",
+      "CLAUDE.md, since project memory changes most often"
+    ],
+    "correctIndex": 2,
+    "explanation": "Assembly follows a stability gradient: tools param first, then the system param (with CLAUDE.md and env info at or near it), then the messages array, ending with the newest, most volatile content — your latest input or the latest tool_result. The order exists for prompt caching: the cache matches a prefix from the start of the request, so putting the most stable material first makes the longest possible head a cache hit on every call. The distractors invert this — tool definitions are the MOST stable layer and go first, and CLAUDE.md is re-injected in the stable head each request, not appended at the tail. Remember the keystone: the API is stateless, so this entire stack is rebuilt and re-sent every single call, and only the ordering keeps that resend affordable."
+  },
+  {
+    "id": "3.1-L2-02",
+    "topic": "3.1",
+    "topicName": "Prompt assembly",
+    "difficulty": 2,
+    "question": "Where does the content of CLAUDE.md actually end up when the harness builds a request?",
+    "options": [
+      "In the stable head of the request, at or near the system layer, re-injected on every call",
+      "In the messages array as your first user message, sent once at session start",
+      "It stays on disk — the model is given the file path and reads it on demand",
+      "In the tools parameter, as a schema the model can query"
+    ],
+    "correctIndex": 0,
+    "explanation": "CLAUDE.md is request-shaping memory: the harness injects its content into the stable, cacheable head of the request (at or near the system parameter) on every single call. That is why it survives compaction — it was never part of the compacted history; it is re-added fresh each assembly. The 'sent once at session start' distractor is the tempting one, but it contradicts the stateless loop: nothing is 'sent once' to a server that stores nothing — anything the model must keep seeing must be re-sent every call. And the model never reads files on its own; it can only emit tool_use requests that the harness executes. This works identically on Bedrock and the Anthropic API — assembly is entirely harness-side."
+  },
+  {
+    "id": "3.1-L3-01",
+    "topic": "3.1",
+    "topicName": "Prompt assembly",
+    "difficulty": 3,
+    "question": "Why is the tools → system → messages ordering of a request load-bearing rather than an arbitrary API convention?",
+    "options": [
+      "The model parses the request in that order and errors out otherwise",
+      "Prompt caching matches a prefix, so most-stable-first maximizes the cached head; anything volatile placed early would invalidate everything after it",
+      "The API rejects requests where the system prompt follows the messages array",
+      "It minimizes bandwidth by letting the server skip transmitting the stable parts"
+    ],
+    "correctIndex": 1,
+    "explanation": "Prompt caching operates on prefixes: the server matches the request from its first byte up to a breakpoint and skips recomputing whatever matches. Ordering by stability — tool definitions (most stable), then system prompt and memory, then the volatile conversation tail — means the long stable head hits cache every call, billing around 0.1× instead of 1×. Put anything churning early (a timestamp in the system prompt, a reordering tool list) and every token after it re-bills. The bandwidth distractor is a classic misreading: cached tokens are still transmitted in full on every call; the saving is server-side recomputation, hence cost and latency — never bandwidth. In a stateless loop where the whole conversation is re-sent per call, the stability gradient IS the cache strategy, and the cache is what keeps the quadratic resend economically alive."
+  },
+  {
+    "id": "3.1-L3-02",
+    "topic": "3.1",
+    "topicName": "Prompt assembly",
+    "difficulty": 3,
+    "question": "A colleague proposes adding the current timestamp to the top of the system prompt so the model always knows the time. What's the hidden cost?",
+    "options": [
+      "None — the system prompt is free because it is not counted as input tokens",
+      "The model will get confused by seeing different times across turns",
+      "Only a few extra tokens per call, roughly the length of the timestamp",
+      "Every call invalidates the cached prefix from that point on, so the system prompt, and everything ordered after it, re-bills at cache-write rates each turn"
+    ],
+    "correctIndex": 3,
+    "explanation": "Caching matches a prefix, and a per-call timestamp near the top of the request means the prefix diverges within the first few tokens of every call. Everything after the divergence point — the rest of the system prompt, CLAUDE.md, the entire conversation — stops hitting cache and must be re-processed, with the newly 'stable' portion written back at 1.25× base input price. The 'few extra tokens' answer is the trap: it prices the timestamp itself but misses that cache invalidation is positional, not proportional — a 10-token edit placed early can re-bill hundreds of thousands of tokens behind it. This is exactly why the harness keeps the head still and pushes volatile facts (like dates) into late-positioned injected reminders instead. Same math whether you're billed by Anthropic or through AWS Bedrock."
+  },
+  {
+    "id": "3.1-L3-03",
+    "topic": "3.1",
+    "topicName": "Prompt assembly",
+    "difficulty": 3,
+    "question": "A skill-injection log shows matchedSkills=[A, B, C] but injectedSkills=[A]. What does this reveal about how the harness assembles context?",
+    "options": [
+      "Assembly is curation: matching produces candidates, then a selector with a token budget decides what actually enters the request — and drops the rest on purpose",
+      "A bug — every skill whose description matches the prompt must be injected",
+      "B and C were already in the server-side cache, so re-injecting them was unnecessary",
+      "B and C were injected into a subagent's context instead of the main session"
+    ],
+    "correctIndex": 0,
+    "explanation": "The gap between matched and injected is the whole lesson: assembly is not concatenation of everything relevant, it is selection against a budget. matchedSkills is the candidate set (descriptions that matched your prompt); injectedSkills is what actually entered context; sibling fields like droppedByCap and droppedByBudget name the machinery that cut the rest before the request was built. The cache distractor fails on mechanism — the server-side cache stores computed attention state over whatever prefix was sent; it cannot substitute for content that was never placed in the request, because a stateless model only sees what this call literally contains. The naive model — 'the harness dumps system + tools + memory + history' — is wrong precisely here: there is a curation step, and it can and does leave things out."
+  },
+  {
+    "id": "3.1-L3-04",
+    "topic": "3.1",
+    "topicName": "Prompt assembly",
+    "difficulty": 3,
+    "question": "A colleague says: \"The session's .jsonl transcript is exactly the message array that gets sent to the model each turn.\" What's the correction?",
+    "options": [
+      "Correct — the harness streams the transcript file directly to the API",
+      "Wrong in the other direction — the transcript is smaller than the request",
+      "Wrong — the transcript is a superset with many record types (mode changes, permission switches, file-history snapshots); the harness assembles the message array from a subset of it and adds injected content that was never in it",
+      "Correct, except tool results are stripped before sending"
+    ],
+    "correctIndex": 2,
+    "explanation": "The transcript is a durable tape that interleaves the conversation with UI and harness state — observed record types include mode, permission-mode, queue-operation, ai-title, attachment, and file-history-snapshot alongside user and assistant records. Only a subset of that becomes the message array. Meanwhile the harness also injects content that never existed in the transcript as authored messages: system-reminder blocks marked isMeta:true, the harness talking to the model over the user channel. So transcript and request are different objects related by an assembly step, in both directions — the transcript holds more record types, and the request holds injected material the transcript's conversation never contained. This distinction is what makes 'resume' a reconstruction rather than a replay, and it is why you cannot audit what the model saw by reading the JSONL alone."
+  },
+  {
+    "id": "3.1-L4-01",
+    "topic": "3.1",
+    "topicName": "Prompt assembly",
+    "difficulty": 4,
+    "question": "In the Claude Messages API request that the harness builds, what is the system prompt, structurally?",
+    "options": [
+      "The first message in the messages array, with role \"system\"",
+      "A separate top-level parameter of the request, alongside tools and messages — not a message at all",
+      "A special content block type inside the first user message",
+      "A header on the HTTP request, outside the JSON body"
+    ],
+    "correctIndex": 1,
+    "explanation": "Claude's API takes the system prompt as a dedicated top-level system parameter, distinct from the messages array — unlike some other providers' APIs where 'system' is a message role. The messages array carries only alternating user and assistant roles. This structural fact matters for cache reasoning: the request prefix runs tools param → system param → messages, so the system prompt sits in the stable head, ahead of all conversation content, and editing it invalidates the cached prefix for everything after it. The role-\"system\"-message distractor is the habit imported from other ecosystems; Claude's protocol has exactly two message roles, which is also why tool results must ride inside user messages rather than a third role. Bedrock wraps the same Anthropic-shaped payload, so this anatomy is identical through either door."
+  },
+  {
+    "id": "3.1-L4-02",
+    "topic": "3.1",
+    "topicName": "Prompt assembly",
+    "difficulty": 4,
+    "question": "Mid-session, a new tool definition gets added to your request (say, a deferred MCP tool is loaded). Beyond the tokens of the definition itself, what is the subtler cost?",
+    "options": [
+      "The model must re-evaluate all prior tool calls against the new schema",
+      "Nothing subtler — tool definitions are excluded from caching entirely",
+      "The harness must restart the session to register the new tool",
+      "The tools param sits earliest in the prefix, so changing it invalidates the cached prefix behind it — the next call re-processes and re-writes what used to be a cheap cache read"
+    ],
+    "correctIndex": 3,
+    "explanation": "Tool definitions occupy the earliest, most stable slot in the request precisely because they change least. When they do change mid-session, the divergence point moves to almost the very start of the request: the previously cached prefix — system prompt, memory, the whole accumulated conversation — no longer matches, so the next call pays full input rates on it and cache-write (1.25×) to establish the new prefix. On a long session that can mean re-billing hundreds of thousands of tokens for one added tool. That is the real logic behind deferring MCP tool schemas until needed: a busy, dynamic context isn't just bigger, it is less cacheable. The 'excluded from caching' distractor is backwards — tools are the most cached part of all; that's exactly why perturbing them is expensive."
+  },
+  {
+    "id": "3.2-L2-01",
+    "topic": "3.2",
+    "topicName": "The tool protocol",
+    "difficulty": 2,
+    "question": "What actually IS a tool call, at the protocol level?",
+    "options": [
+      "A tool_use content block — an id, a tool name, and a JSON input — emitted as structured text, after which the model's turn ends",
+      "A remote procedure call the model makes over an open socket to the harness",
+      "A special API endpoint the model invokes server-side before finishing its reply",
+      "A callback function the harness registers with the model at session start"
+    ],
+    "correctIndex": 0,
+    "explanation": "A tool call is just structured text. The model emits a tool_use content block carrying an id, a name, and a JSON input, and then stops — emitting tool_use is a stop condition for that generation. There is no socket, no callback, no server-side execution: the model cannot do anything, it can only ask. The harness reads the block, executes the tool locally on your machine, and sends the result back as a tool_result block inside a brand-new request. Two text blocks, two separate stateless API calls, correlated by one shared id. Every RPC-flavored distractor imports statefulness the protocol doesn't have; the loop only continues because the harness chooses to send a longer request carrying the answer."
+  },
+  {
+    "id": "3.2-L2-02",
+    "topic": "3.2",
+    "topicName": "The tool protocol",
+    "difficulty": 2,
+    "question": "When Claude Code 'reads a file' during a session, which component actually touches your disk?",
+    "options": [
+      "The model, which is granted scoped filesystem access for the session",
+      "The API server, which mounts your project directory during the call",
+      "The harness — the local CLI process executes the Read and sends the contents back in the next request",
+      "Nothing touches disk — the file was uploaded into context when the session started"
+    ],
+    "correctIndex": 2,
+    "explanation": "Only the harness — the Claude Code process on your machine — ever touches your files. The model runs on Anthropic's (or AWS's, if you're on Bedrock) servers and has no filesystem, no network access to you, and no execution ability; it emits a tool_use block asking for the read and halts. The harness performs the read locally and ships the bytes back as a tool_result in the next request. The 'uploaded at session start' distractor fails on the stateless keystone: there is no session store to upload into — the only things the model ever sees are the literal contents of each individual request. This division is also the privacy boundary: your repo stays local, and only what the harness explicitly places into a request ever leaves the machine."
+  },
+  {
+    "id": "3.2-L3-01",
+    "topic": "3.2",
+    "topicName": "The tool protocol",
+    "difficulty": 3,
+    "question": "In Claude's protocol, what role carries a tool_result back to the model?",
+    "options": [
+      "A dedicated \"tool\" role, distinct from user and assistant",
+      "The \"assistant\" role, since the harness acts on the model's behalf",
+      "The \"system\" role, because tool output is infrastructure, not conversation",
+      "The \"user\" role — tool_result blocks ride inside an ordinary user message"
+    ],
+    "correctIndex": 3,
+    "explanation": "Claude's API has no tool role — only user and assistant alternate in the messages array (system is a separate top-level parameter, not a role). The tool_result block is placed inside a normal user message, keyed to its request by tool_use_id. Empirically, every tool result in a transcript arrives with role user, without exception. People assume a dedicated role because some other providers' APIs have one; Claude's does not, and the consequence is load-bearing: the output of a Bash command and a sentence you typed arrive on the same channel, wearing the same name. That single-channel design is precisely what makes prompt injection through tool results a structural category rather than an implementation bug — the model has no protocol-level way to know which user bytes a human authored."
+  },
+  {
+    "id": "3.2-L3-02",
+    "topic": "3.2",
+    "topicName": "The tool protocol",
+    "difficulty": 3,
+    "question": "The model emits three tool_use blocks in a single reply (parallel tool calls). When the results come back, what tells it which result answers which request?",
+    "options": [
+      "The order of the results, which mirrors the order of the requests",
+      "The tool_use_id — each tool_result echoes back the id of the exact request it answers",
+      "The tool name on each result block",
+      "A sequence number the API server assigns to each round-trip"
+    ],
+    "correctIndex": 1,
+    "explanation": "The id is the entire mechanism. The model mints an id on each tool_use block; the harness echoes that same string back as tool_use_id on the corresponding tool_result. It is a correlation key on a stateless channel — the same reason request ids exist in HTTP. Order can't do the job reliably, and names collide outright: three parallel Bash calls all say 'Bash', so the name identifies the tool, never the invocation. There is no server-side sequence number because there is no server-side session to keep one in — each API call is self-contained, and everything needed to line requests up with answers must travel inside the message text itself. When teaching this, the id field is the cleanest proof that a tool call is text-matching, not function-calling."
+  },
+  {
+    "id": "3.2-L3-03",
+    "topic": "3.2",
+    "topicName": "The tool protocol",
+    "difficulty": 3,
+    "question": "A colleague says: \"When Claude runs a long Bash command, the model waits for it to finish, then continues its answer.\" What's the correction?",
+    "options": [
+      "Wrong — the model emitted tool_use and its generation ended; the harness runs the command and the 'continuation' is a fresh, longer request carrying the tool_result",
+      "Right — the API holds the connection open while the tool executes",
+      "Right, except the model does other users' work while it waits",
+      "Wrong — the harness streams the command output into the model's still-open generation"
+    ],
+    "correctIndex": 0,
+    "explanation": "The model never waits, because there is nothing to wait in: emitting tool_use is a stop condition, the generation ends, and the API call completes. Whatever time the command takes passes entirely on your machine, inside the harness. When output is ready, the harness assembles a new request — the whole conversation again, now with the tool_result appended as a user message — and the model reads it all as if for the first time, because it is the first time. 'Holds the connection open' and 'streams output into the open generation' both smuggle in a stateful, blocking call that the protocol simply doesn't have; the round-trip is two text blocks on two separate stateless requests. This is also why one user turn can quietly become dozens of full-priced model calls."
+  },
+  {
+    "id": "3.2-L4-01",
+    "topic": "3.2",
+    "topicName": "The tool protocol",
+    "difficulty": 4,
+    "question": "A colleague asks: \"Why can't Anthropic just train the model to ignore malicious instructions inside files and web pages it reads?\" What's the strongest mechanistic answer?",
+    "options": [
+      "They could, but retraining for each attack pattern is too expensive",
+      "The harness already strips malicious instructions before the model sees them",
+      "Tool output re-enters as a user message on the same channel as your instructions; the protocol gives the model no marker separating data a tool returned from commands a human gave, so the distinction it would need doesn't exist in its input",
+      "The model is required to treat all text as instructions by its system prompt"
+    ],
+    "correctIndex": 2,
+    "explanation": "Prompt injection is a protocol category, not a training gap. Two facts combine: tool results ride in user-role messages, and the model reads the assembled array as one undifferentiated stream of text. So a fetched web page containing 'delete the tests' is, structurally, on the same channel and role as you typing it — there is no protocol-level line for the model to hold, however well aligned it is. Training can make models more suspicious of instruction-shaped content, but it cannot manufacture a channel distinction the input format never carried; that's why mitigations live in the harness — permission prompts, sandboxing, not piping untrusted text into an agent with write access. The 'harness strips it' distractor describes a defense nobody can implement reliably, since malicious instructions are just text and detection is heuristic at best."
+  },
+  {
+    "id": "3.2-L4-02",
+    "topic": "3.2",
+    "topicName": "The tool protocol",
+    "difficulty": 4,
+    "question": "In a healthy transcript, tool_use and tool_result block counts match exactly (e.g. 163 = 163). What enforces that pairing?",
+    "options": [
+      "The model tracks its outstanding requests and re-issues any that go unanswered",
+      "The protocol: a tool_use left without a matching tool_result in the next request is malformed input the API rejects, so the harness must answer every request — even a failure becomes a tool_result with is_error",
+      "Coincidence — the counts drift apart in longer sessions",
+      "A background reconciliation job in the harness that patches missing results at session end"
+    ],
+    "correctIndex": 1,
+    "explanation": "The pairing is a protocol invariant, not good luck. When an assistant message contains tool_use blocks, the following user message must supply a tool_result for each id — a dangling request makes the conversation malformed, and the API errors on it. So the harness cannot simply skip a tool that failed, was denied by permissions, or was interrupted: it must still send back a tool_result, using is_error: true or explanatory content to say what happened. That is why the counts match to the block across thousands of calls. The 'model re-issues requests' distractor fails on statelessness — the model has no memory of outstanding requests between calls; it only ever sees what the current message array contains. Understanding this invariant explains oddities like why a rejected permission prompt still produces a visible result message in the conversation."
+  },
+  {
+    "id": "3.3-L1-01",
+    "topic": "3.3",
+    "topicName": "The special local files",
+    "difficulty": 1,
+    "question": "What is the CLAUDE.md file for?",
+    "options": [
+      "It is Claude Code's changelog, describing what changed in each release",
+      "It stores your API credentials so the CLI can authenticate",
+      "It is a log Claude writes to summarize what it did in each session",
+      "It holds project instructions and context — memory that Claude Code loads into the model's context so it follows your conventions"
+    ],
+    "correctIndex": 3,
+    "explanation": "CLAUDE.md is the memory file: you (or /init) write project conventions, build commands, architecture notes, and rules into it, and the harness injects its content into the model's context on every request. It can exist at several scopes — a user-level file in ~/.claude/ for personal preferences, a project-level file in the repo, even per-directory files — and the scopes stack together rather than replacing each other. It is not written by Claude as a log, and it never holds credentials (auth lives elsewhere — and if you run through AWS Bedrock, auth comes from your AWS credentials, not any Claude Code file). The mental model to start with: the model itself remembers nothing between calls, so anything you want it to always know must live in a file the harness re-sends every time. CLAUDE.md is that file."
+  },
+  {
+    "id": "3.3-L2-01",
+    "topic": "3.3",
+    "topicName": "The special local files",
+    "difficulty": 2,
+    "question": "For a scalar setting like model, which correctly orders the settings.json layers from highest precedence to lowest?",
+    "options": [
+      "Managed/enterprise > CLI args > local project > project > user (global)",
+      "User (global) > project > local project > CLI args > managed/enterprise",
+      "CLI args > managed/enterprise > user (global) > project > local project",
+      "Project > local project > user (global) > managed/enterprise > CLI args"
+    ],
+    "correctIndex": 0,
+    "explanation": "The chain runs Managed/enterprise > CLI arguments > local project (.claude/settings.local.json) > project (.claude/settings.json) > user (~/.claude/settings.json), with the highest layer winning for overlapping keys and lower values discarded. The logic is governance-outward: an organization's managed policy must beat anything an individual sets, and an explicit CLI flag beats files because it's the most deliberate per-invocation signal; the user-global file is the broadest default, so it yields to anything more specific. The user-first distractor is the intuitive trap ('my global config is mine, surely it wins') — precedence runs the other way. And remember this override rule is specific to settings.json scalars: CLAUDE.md scopes stack additively and permission rules resolve deny-wins, so 'who wins' has a different answer per surface."
+  },
+  {
+    "id": "3.3-L2-02",
+    "topic": "3.3",
+    "topicName": "The special local files",
+    "difficulty": 2,
+    "question": "You have a user-level CLAUDE.md in ~/.claude/ and a project CLAUDE.md in your repo, with different content. What does the model see?",
+    "options": [
+      "Only the project file — more specific scope overrides the global one",
+      "Both — CLAUDE.md scopes are additive, so global and project content concatenate into context together",
+      "Only the user file — it loads first and locks out later ones",
+      "Whichever file was modified most recently"
+    ],
+    "correctIndex": 1,
+    "explanation": "CLAUDE.md resolves by additive merge: user-level, project-level, and any subdirectory files all stack into the request at once. Asking 'which one wins' is a category error imported from settings.json, which does use highest-layer-wins override for scalars — but memory files don't compete, they concatenate. That's coherent with what they're for: your personal preferences and the project's conventions are usually complementary instructions, not alternatives, so the model should see both. The practical consequences: contradictions between the files land in context together (the model has to arbitrate in prose, so keep scopes consistent), and every scope you add is tokens on every single request, because the whole stack rides in the stable head of each resend. Three surfaces, three resolution rules — override for settings scalars, additive for memory and skills, deny-wins for permissions."
+  },
+  {
+    "id": "3.3-L2-03",
+    "topic": "3.3",
+    "topicName": "The special local files",
+    "difficulty": 2,
+    "question": "Where does Claude Code store the durable record of your sessions?",
+    "options": [
+      "On Anthropic's servers, keyed by your account, synced to disk on demand",
+      "In a SQLite database at ~/.claude/sessions.db",
+      "As JSONL transcripts under ~/.claude/projects/<project-slug>/<sessionId>.jsonl",
+      "In the project repo, under .claude/history/"
+    ],
+    "correctIndex": 2,
+    "explanation": "Every session is appended to a plaintext JSONL file under ~/.claude/projects/, in a directory slug derived from the project path, one file per session id. Each line is a JSON record — user and assistant messages with the API's own usage accounting, but also harness state like mode changes and file-history snapshots. This is the durable tier of state, and it lives only on your disk: none of it is uploaded as a side effect of a turn, and the server holds nothing between calls except the ephemeral prompt cache (true on Bedrock and Anthropic alike — statelessness is the protocol, not the provider). The server-side distractor is the folk model the stateless loop kills: if history lived on the server, the harness wouldn't need to re-send the conversation every call. Two cautions worth knowing: the files are unencrypted plaintext, and their schema is undocumented and version-unstable."
+  },
+  {
+    "id": "3.3-L3-01",
+    "topic": "3.3",
+    "topicName": "The special local files",
+    "difficulty": 3,
+    "question": "Which of these is NOT stored anywhere under ~/.claude/?",
+    "options": [
+      "Session transcripts, including per-call token accounting",
+      "File-history snapshots that back the rewind/undo feature",
+      "Installed plugins with their skills and commands",
+      "The prompt cache that made most of your input tokens bill at ~0.1×"
+    ],
+    "correctIndex": 3,
+    "explanation": "The prompt (KV) cache is the one ephemeral, server-side tier in the whole state model: it lives on Anthropic's or AWS's infrastructure, holds computed attention state rather than your text, is scoped per model, and is evicted on a TTL (5 minutes by default, 1 hour where configured). You cannot point at it on disk, and nothing in ~/.claude/ is it. Everything else listed is genuinely durable and local: transcripts under projects/ (with the usage object on every assistant record), file-history/ backing rewind, plugins/ holding installed code and skills. Conflating the cache with local storage is the same error as reading cache_read_input_tokens as 'tokens not sent' — the full prefix is transmitted every call; the cache only spares the server recomputation. Durable state is the harness's, on your disk; the server keeps only a cost-optimizing cache; the model keeps nothing."
+  },
+  {
+    "id": "3.3-L3-02",
+    "topic": "3.3",
+    "topicName": "The special local files",
+    "difficulty": 3,
+    "question": "A colleague says: \"claude --resume restores the session exactly as it was — the next request picks up byte-identical to where we stopped.\" What's the correction?",
+    "options": [
+      "Resume is a reconstruction, not a restore: the harness replays the transcript to rebuild the conversation but re-assembles the request NOW — current date, current tool list, fresh injected reminders — so the next request is not byte-identical to a live continuation",
+      "Correct — the transcript stores the exact request bytes, and resume re-sends them",
+      "Wrong, because resume only restores the last 10 messages",
+      "Correct, as long as you resume on the same machine"
+    ],
+    "correctIndex": 0,
+    "explanation": "What persists is the transcript — the durable record. What the model sees is always a reconstruction built fresh at assembly time. On --resume, the harness reads the JSONL to recover the user/assistant history, but everything else is resolved against the present: today's date in env info, whatever tools and MCP servers are configured now, newly injected system-reminders, the current system prompt version. The transcript couldn't be replayed byte-for-byte even in principle — it never stored the assembled request (no system param, no tools param), only the tape the request gets built from. One practical corollary: after a long idle, the reconstructed prefix no longer matches any server-side cache entry (TTL-evicted anyway), so the first resumed call takes a full-price cache-write on the whole history. 'The session is saved' is true; 'the context is restored' is not — it's rebuilt."
+  },
+  {
+    "id": "3.3-L3-03",
+    "topic": "3.3",
+    "topicName": "The special local files",
+    "difficulty": 3,
+    "question": "From a data-privacy standpoint, which statement about Claude Code's on-disk state is accurate?",
+    "options": [
+      "Transcripts are encrypted at rest with a key derived from your login",
+      "Everything under ~/.claude/ is plaintext — transcripts include anything you pasted into a session — and none of it is uploaded as a side effect of a turn; only the assembled request crosses the wire",
+      "The ~/.claude/ directory is synced to Anthropic's servers for backup",
+      "Only token counts are written to disk; message content is kept in memory"
+    ],
+    "correctIndex": 1,
+    "explanation": "Both halves matter. Locally: transcripts, settings, and adjacent state files are unencrypted plaintext, so any secret you pasted into a session is sitting readable on disk — and ~/.claude.json (beside the directory) holds OAuth tokens in the clear too, if you authenticate that way (Bedrock users authenticate via AWS credentials instead). Outbound: the boundary is clean — the only thing that ever leaves the machine is the reconstructed request (system + tools + messages) sent to the API endpoint, whether that endpoint is Anthropic or Bedrock in your AWS account. Nothing in ~/.claude/ is synced or uploaded as a side effect; between calls the server retains only the ephemeral prompt cache, not your conversation. The teachable summary: history is local and plaintext; transmission is one assembled array per call; server retention is a TTL'd cost optimization."
+  },
+  {
+    "id": "3.4-L2-01",
+    "topic": "3.4",
+    "topicName": "Configuration surfaces",
+    "difficulty": 2,
+    "question": "A colleague put their code-style rules ('always use type hints, never abbreviate names') into settings.json, and Claude keeps ignoring them. Why?",
+    "options": [
+      "settings.json only takes effect after restarting the session",
+      "The rules need to be under a special \"rules\" key to be recognized",
+      "settings.json is harness-shaping config — it never crosses the wire, so the model cannot see rules placed there; instructions the model must act on belong in CLAUDE.md, which lands in the request",
+      "The project-level settings file is overriding their user-level rules"
+    ],
+    "correctIndex": 2,
+    "explanation": "This is the landing axis doing its job. Every config surface either shapes the request (its content lands in the payload the model reads) or shapes the harness (it governs the loop and never leaves the machine). settings.json is squarely harness-side: model selection, permissions, hooks, UI — none of it is transmitted as content, so no amount of rewording rules inside it will help; the model cannot obey what it never receives. Rules the model must act on are request-shaping by definition and belong in CLAUDE.md, which the harness injects into the system layer on every call. The restart and precedence distractors assume the setting is reaching the model and merely resolving wrong — but the failure is categorical, not a tie-break. The two-bin test settles every case like this: if the model must see it, it's request-shaping; if it governs the loop, it's harness-shaping."
+  },
+  {
+    "id": "3.4-L3-01",
+    "topic": "3.4",
+    "topicName": "Configuration surfaces",
+    "difficulty": 3,
+    "question": "A colleague asks three questions: \"Which CLAUDE.md wins, global or project? Which permission wins if user-level allows Bash but project-level denies it? Which model setting wins?\" What's the right framing?",
+    "options": [
+      "One rule covers all three: the most specific scope always wins",
+      "One rule covers all three: highest precedence layer wins",
+      "It's configurable — settings.json has a key that picks the resolution strategy",
+      "Three different rules: CLAUDE.md files don't compete, they stack additively; permissions are deny-wins, so the deny prevails; model follows the settings precedence chain, highest layer wins"
+    ],
+    "correctIndex": 3,
+    "explanation": "Resolution is not one rule — it's three, keyed by surface. settings.json scalars like model resolve by override: managed > CLI > local project > project > user, higher layer wins, lower discarded. CLAUDE.md (like skills and MCP servers) resolves additively: all scopes concatenate into context simultaneously, so 'which wins' is a category error — both are present. Permissions resolve safety-first: a deny at any layer beats an allow anywhere, so the colleague's Bash is denied regardless of the user-level allow. The single-rule distractors are exactly the bug source this axis exists to kill — people import the override model onto memory files ('my project file should replace the global one') or onto permissions ('my global allow should win') and then misdiagnose the behavior. When a config question confuses you, first ask which resolution family the surface belongs to."
+  },
+  {
+    "id": "3.4-L3-02",
+    "topic": "3.4",
+    "topicName": "Configuration surfaces",
+    "difficulty": 3,
+    "question": "You flip a session from the Anthropic API to AWS Bedrock by setting the CLAUDE_CODE_USE_BEDROCK environment variable (plus AWS credentials). On the two-axis config grid, what kind of change is this, and what does the model see of it?",
+    "options": [
+      "Harness-landing: it redirects which door the request goes through; the assembled payload shape and content are unchanged, and the model sees nothing of it",
+      "Request-landing: a Bedrock preamble is added to the system prompt so the model knows its provider",
+      "Both: the tool list is swapped for Bedrock-specific tool definitions",
+      "Request-landing: the messages array is re-encoded into an AWS-specific format the model must parse"
+    ],
+    "correctIndex": 0,
+    "explanation": "Provider selection is pure harness configuration: it changes the endpoint, auth mechanism (AWS credentials/IAM instead of an Anthropic key or OAuth), and model identifiers used on the wire — but it lands nowhere in the content the model reads. The same assembly runs, the same tools/system/messages structure ships (Bedrock wraps the same Anthropic-shaped payload), and the same weights answer; Bedrock is a different door to the same model, not a different model. Nothing tells the model which door was used, and no prompt wording can query or change it — the classic property of harness-landing config. Note the Bedrock delta on the resolution axis, though: this surface is env-var heavy (CLAUDE_CODE_USE_BEDROCK, AWS region and credential variables) rather than settings-file driven, so 'where is this configured?' has a different answer than for most other settings, even though 'what does the model see?' is still: nothing."
+  },
+  {
+    "id": "3.4-L4-01",
+    "topic": "3.4",
+    "topicName": "Configuration surfaces",
+    "difficulty": 4,
+    "question": "The request-vs-harness landing binary is clean for most surfaces. Which setting most legitimately resists it, and why?",
+    "options": [
+      "permissions — because the model can be told about them in CLAUDE.md",
+      "enabledPlugins — it is harness-side configuration that never ships as content itself, yet it indirectly reshapes the request by adding skills, commands, and tool definitions that DO land in the payload",
+      "model — because the chosen model name appears in the response metadata",
+      "cleanupPeriodDays — because trimming transcripts changes what gets resent"
+    ],
+    "correctIndex": 1,
+    "explanation": "enabledPlugins sits in both bins at once: the key itself is harness config the model never sees, but toggling it changes what exists to be assembled — plugin skills add always-present descriptions, plugin MCP servers add tool definitions, plugin commands add invocable content. Its landing is indirect: it shapes the request by changing the inputs to assembly, not by being content. The distractors fail individually: describing permissions in CLAUDE.md doesn't make the permission system request-landing — the enforcement still happens in the harness, invisible to the model (and telling the model about rules it can't verify changes nothing mechanically). Response metadata isn't the request payload. And cleanupPeriodDays governs disk retention of old transcripts — it never alters what a live session resends, because assembly reads the current session's tape, not your archive. The refined test: does the setting change the bytes of any request, directly or by changing assembly's inputs?"
+  }
+]

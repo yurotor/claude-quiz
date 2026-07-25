@@ -1,0 +1,114 @@
+{
+  "3.5": {
+    "title": "Permissions",
+    "intro": "Permissions are the harness's gate on what the model's proposals are actually allowed to do. The model only ever emits a `tool_use` request; whether that request executes is decided entirely on your machine, by rules the model never sees.",
+    "sections": [
+      {
+        "heading": "The gate lives in the harness, not the model",
+        "body": "Every action in Claude Code follows the same protocol: the model returns a `tool_use` block, and the harness decides whether to execute it. Permission rules sit at that decision point. They are harness-shaping configuration — they govern the loop and are never transmitted in the request payload, so they cost zero tokens and are invisible to the model.\n\nThis invisibility cuts both ways. You cannot make the model 'respect' a permission by asking nicely in a prompt, because the model never receives the rule — the harness simply blocks or allows after the fact. But equally, no clever prompt injection in a file or web page can talk the gate open, because the gate is not prompt-addressable. That is exactly why permissions are enforced in the harness rather than delegated to model judgment: they hold even when the model is confused or manipulated. Everything here is provider-neutral — the gate runs locally and works identically on Bedrock and the Anthropic API."
+      },
+      {
+        "heading": "Allow, deny, ask — and deny always wins",
+        "body": "Rules take the form `Tool(specifier)`: `Bash(npm run test:*)`, `Read(~/.zshrc)`, `WebFetch(domain:example.com)`. Each rule lands in one of three lists — `allow` (run without asking), `deny` (never run), `ask` (always prompt) — and rules can live at every settings tier: managed/enterprise, project `.claude/settings.json`, project-local `settings.local.json`, and user-level.\n\nThe resolution model is the part people get wrong. Scalar settings like `model` resolve by precedence — the highest layer wins and lower layers are discarded. Permissions do not. Rules from all layers combine, and a `deny` at any layer beats an `allow` at any other layer. It is safety-first merging, not a precedence ladder. So if your user settings allow `Bash(rm:*)` but the project denies it, the command is blocked — no tier outranks a deny. Claude Code has three distinct resolution regimes across its surfaces: override (settings scalars), additive (CLAUDE.md stacking), and deny-wins (permissions). Applying the wrong regime to the wrong surface is a classic misconfiguration."
+      },
+      {
+        "heading": "Permission prompts and where answers persist",
+        "body": "When a proposed action matches no rule, the harness pauses the loop and prompts you. Your answer can apply once, for the rest of the session, or 'always' — and 'always' is just rule-writing: the harness appends a rule to a settings file (typically the project's `settings.local.json`, which is meant to stay out of version control). Next time, the rule matches and no prompt appears.\n\nThis matters most in headless mode. `claude -p` has no human to prompt, so an unmatched action can't be interactively approved — non-interactive runs need their allowlist configured up front, a permission mode that doesn't prompt, or they will stop at the gate. If you find yourself approving the same command daily, that is a signal to promote the decision into a durable allow rule rather than re-answering the prompt."
+      },
+      {
+        "heading": "Permission modes",
+        "body": "Modes shift where the prompting threshold sits without changing the rule machinery. Default mode prompts for anything not pre-allowed. Accept-edits mode auto-approves file edits (the routine bulk of prompts) while still gating commands. Plan mode goes the other direction: the harness restricts Claude to read-only exploration — it can search and read but not mutate, which is why plan mode is the safe way to let it roam an unfamiliar codebase. Bypass-permissions mode skips prompting entirely and should be confined to isolated, disposable environments such as containers and CI, where the blast radius is bounded by the environment itself.\n\nThe key mental model: modes adjust the *ask* behavior; explicit rules still exist underneath. A mode is a session-level dial, while rules are durable configuration — and both are pure harness state, never part of the request."
+      },
+      {
+        "heading": "Sandboxing: a second, OS-level layer",
+        "body": "Permission rules answer 'may this tool call run at all?' Sandboxing answers a different question: 'given that it runs, what can it touch?' Sandboxed execution uses operating-system isolation primitives to confine commands — restricting filesystem writes outside the workspace and limiting network access — independently of the allow/deny layer.\n\nThe two layers compose. A command can be permitted by rules yet still be unable to write outside the project because the sandbox stops it at the OS level. This is also why sandboxing can *reduce* prompt fatigue: when the harness knows a command is confined, it can afford to ask less often, because even a bad command has a bounded blast radius. Rules are policy enforced by the harness process; the sandbox is containment enforced by the OS beneath it. Defense in depth means a mistake has to get through both."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Identity and access management (permissions)", "url": "https://docs.claude.com/en/docs/claude-code/iam" },
+      { "label": "Claude Code docs — Settings", "url": "https://docs.claude.com/en/docs/claude-code/settings" }
+    ]
+  },
+  "3.6": {
+    "title": "Context lifecycle & compaction",
+    "intro": "Within a session, context only ever accumulates — it never resets on its own. Compaction is the one mechanism that bounds that growth, and it only makes sense once you remember the keystone: every turn re-sends the entire conversation.",
+    "sections": [
+      {
+        "heading": "Why compaction must exist",
+        "body": "The model is stateless, so the harness rebuilds and re-sends the whole conversation on every turn. Two consequences follow directly. First, cost: turn *n* pays for everything from turn 1 to *n*, so a session's cumulative token bill grows roughly quadratically with its length. Second, a hard wall: the model's context window is finite, and a session that keeps accumulating — prompts, replies, and above all verbose tool outputs — will eventually hit the ceiling and simply cannot continue.\n\nCaching and compaction are the two answers, and they solve different halves. Prompt caching makes the resend *cheap* (a cached prefix re-reads at roughly a tenth of base input price) but does nothing about size — a cached 180k-token context is still 180k tokens against the window. Compaction makes the resend *bounded*: it shrinks what gets assembled into future requests. You need both, and confusing them is a common quiz trap: caching is a discount, compaction is a diet."
+      },
+      {
+        "heading": "What's kept, what's lost",
+        "body": "Compaction replaces older messages with a model-written summary while keeping your most recent exchanges and key decisions. It is lossy on purpose. The documented caveat is worth quoting almost verbatim: specific instructions from early in the conversation may not be preserved. Early verbose detail — long tool outputs, the exact wording of an instruction you gave in turn 2 — is collapsed into summary prose or dropped entirely.\n\nThat yields a practical rule: a persistent instruction does not belong in your opening prompt, because a fold can eat it. It belongs in `CLAUDE.md`, which is re-injected into every request and therefore survives every compaction — durable rules go in the always-present layer, never in the foldable one. You can even steer the fold itself: adding a note like 'when compacting, always preserve the current task list' to `CLAUDE.md` gives the summarizer guidance, since it reads your memory files when producing the summary."
+      },
+      {
+        "heading": "Auto-compact, /compact, and what a fold costs",
+        "body": "Auto-compaction triggers as context nears the window limit (the exact threshold is not documented). Manual `/compact` runs the same fold on demand and accepts focus instructions — `/compact keep the API design decisions` — and a `PreCompact` hook can fire first, with a `trigger` field distinguishing `manual` from `auto`, giving you a chance to archive state before the fold.\n\nCompaction is not free; it costs you twice. First, the summarization itself is a model call that must read the entire conversation being folded — one full-price pass over everything, precisely because so little of a fresh summarization prompt is cacheable. Second, the fold is a deliberate cache reset: replacing old turns with a summary rewrites the prefix from that point, so the previously cached prefix is abandoned and the next request pays a large cache write (1.25x base input at the 5-minute TTL) instead of cheap reads. It is a one-time cost paid to stop re-shipping the old bulk on every future turn — a good trade exactly when the folded history was large."
+      },
+      {
+        "heading": "/clear vs compaction vs a new session",
+        "body": "Three escalating resets, all operating on the *reconstructed* context — none of them touch the durable transcript, which is append-only on disk. Compaction even appends to it: a summary plus a `compact_boundary` marker record. Your ledger stays intact; only the working set shrinks.\n\n`/clear` is the blunt tool: it drops the conversational context entirely and continues in the same session and directory — nothing carries forward except what lives in the always-present layer (`CLAUDE.md`, settings, skills). Compaction is the surgical tool: continuity via summary, at the cost of the summarization pass. Starting a new session is `/clear` plus a fresh transcript file, and `--resume` can later rebuild any old session from its transcript — a reconstruction, not a restore.\n\nCost heuristic: when you're switching to an unrelated task, `/clear` beats compaction — you pay nothing and lose nothing you need. Compact when you need the thread of the work to continue past the window. Letting auto-compact fire mid-task is the worst timing; compacting at a natural boundary, or clearing, is deliberate context hygiene."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Manage costs effectively", "url": "https://docs.claude.com/en/docs/claude-code/costs" },
+      { "label": "Claude Code docs — Manage Claude's memory", "url": "https://docs.claude.com/en/docs/claude-code/memory" }
+    ]
+  },
+  "3.7": {
+    "title": "Mid-session changes",
+    "intro": "Editing CLAUDE.md, settings, or MCP config mid-session raises one real question: when does the harness re-read each source? Because the request is rebuilt from scratch every turn, 'does my change take effect?' always reduces to 'is this surface re-resolved per turn, or was it fixed at session start?'",
+    "sections": [
+      {
+        "heading": "The frame: config is read, not subscribed",
+        "body": "Nothing in the system watches config and pushes updates into a live model — there is no live model to push to. The model is stateless; each turn, the harness assembles a fresh request from durable files on disk. So every mid-session-change question is really a cadence question about the assembler: which sources does it consult again on each turn, and which did it snapshot once when the session started?\n\nBroadly there are two cadences. Per-turn (or on-change) surfaces are re-consulted as the loop runs — memory files and permission rules behave this way, which is why a new deny rule can gate the very next tool call. Per-session surfaces are resolved once at startup — the tool inventory and MCP server connections are the clearest case — and editing them on disk changes nothing until a restart or an explicit reload. When a change 'doesn't take', you are almost always holding a per-session surface and expecting per-turn behavior."
+      },
+      {
+        "heading": "What re-resolves as you go",
+        "body": "Files Claude itself edits are trivially current — the next `Read` sees the new bytes, because file content enters context through tool results, not through any snapshot. Permission rules are consulted at each gate check, so tightening or loosening them lands on subsequent tool calls without a restart. Memory (`CLAUDE.md`) edits made mid-session are surfaced to the model too — but by a telling mechanism: rather than silently rewriting the copy already sitting in the assembled context, the harness injects a notice with the updated content into the message flow.\n\nSome dials are per-request by nature: `/model` switches models for the very next call, because model choice is just a field the harness sets on each API request. Harness-side dials change freely mid-session; content already woven into history cannot be retroactively unsaid."
+      },
+      {
+        "heading": "What waits for a new session",
+        "body": "The tool set is the canonical per-session surface. MCP servers are launched and their tool schemas collected when the session initializes; those schemas become part of the request's `tools` parameter. Editing MCP config on disk mid-session does not conjure new tools into the running loop — the harness isn't re-negotiating with servers each turn — so adding a server generally means restarting the session or explicitly reconnecting via the MCP management surface. The same session-start logic applies to the composed system prompt and the loaded plugin/skill inventory: they are established during assembly setup, not re-derived from scratch every turn.\n\nThis is also why `--resume` behaves subtly: it replays the durable transcript to rebuild history, but re-resolves the *environment* now — current date, tool list, settings. A resumed session is old conversation plus new configuration, exactly as the two cadences predict."
+      },
+      {
+        "heading": "System-reminder injection: the delivery channel",
+        "body": "When the harness needs the model to know something changed mid-session, it uses `system-reminder` blocks: harness-authored notes injected into the message array near the current turn. File-change notices, memory updates, background-task notifications, and skill/plugin state all arrive this way. Two properties define them. They are assembly-time artifacts — the model sees them, but you never typed them, and they are not part of the durable user-authored conversation; the transcript on disk and the message array the model saw are genuinely different objects.\n\nSecond, they land at the *tail*, and that placement is load-bearing. Prompt caching matches from the start of the request: mutating the stable head (system prompt, CLAUDE.md layer, tool schemas) would invalidate the cached prefix and force an expensive rewrite. Appending a reminder near the end leaves the whole cached head intact. System-reminders are how the harness reconciles two conflicting needs — keep the prefix byte-stable for the cache, yet still deliver fresh, volatile state to a stateless model."
+      },
+      {
+        "heading": "The cache lens on every mid-session edit",
+        "body": "Rank any mid-session change by where it lands on the stability gradient. Changes that only touch harness behavior — permission rules, hooks, mode switches — cost zero tokens and have no cache effect at all; the model never sees them. Changes delivered as tail injections — system-reminders, new user messages, tool results — cost their own tokens but preserve the cached prefix. Changes that rewrite the stable head are the expensive class: editing `CLAUDE.md` content that sits in the system layer, or changing the tool set, perturbs the prefix, and the next request pays a fresh cache write (1.25x base input) for everything after the edit point instead of ~0.1x reads.\n\nThe takeaway: mid-session config churn isn't forbidden, it's *priced*. One deliberate CLAUDE.md edit is a one-time miss, usually worth it; constant fiddling with prefix-resident config throws away the discount that makes long sessions affordable. The economics are identical on Bedrock and the Anthropic API — only cache TTL options and pricing details differ by provider."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Manage Claude's memory", "url": "https://docs.claude.com/en/docs/claude-code/memory" },
+      { "label": "Claude Code docs — Settings", "url": "https://docs.claude.com/en/docs/claude-code/settings" }
+    ]
+  },
+  "3.8": {
+    "title": "Skill injection mechanics",
+    "intro": "Skills extend what Claude knows how to do by injecting instructions at the prompt-assembly seam. The whole design is one idea — progressive disclosure: every skill's description is always in context, but its body loads only when triggered.",
+    "sections": [
+      {
+        "heading": "Descriptions always, bodies on trigger",
+        "body": "A skill is a directory with a `SKILL.md`: frontmatter carrying a name and description, then a body of instructions (plus optional supporting files). The harness splits these two parts across two very different lifecycles. The name and description of *every* available skill ride along in *every* request — they are ambient context, because the model cannot choose to use a skill it cannot see. The body, which may be thousands of tokens of procedure, scripts, and examples, is loaded only when the skill actually triggers.\n\nThis is the resolution of an otherwise impossible trade-off. Ship all bodies always and a few dozen installed skills would devour the context window before any work began; ship nothing and the model could never discover that a skill exists. Progressive disclosure pays a small permanent tax (descriptions) to defer the large cost (bodies) until proven necessary — the same shape as MCP's deferred tool schemas, and for the same reason."
+      },
+      {
+        "heading": "Where a skill lands in the assembly",
+        "body": "Prompt assembly is layered, stable-first: system prompt and tool schemas, then context files, then history, then the current turn. Skill *descriptions* live in the stable ambient layer — part of the prefix that stays byte-identical turn over turn, which means the cache absorbs their cost: after the first write, they re-read at ~0.1x base input price on every subsequent call.\n\nA triggered skill *body* lands in the opposite place: it is injected into the message flow near the current turn, in the volatile tail, arriving via the harness's injection machinery rather than by rewriting the prefix — so invoking a skill does not disturb the cached head. One under-appreciated consequence: once injected, the body becomes part of the conversation history, and the stateless loop re-sends history every turn. A 3,000-token skill body invoked at turn 10 is paid for (at cache-read rates once stable) on turns 11, 12, 13... until a compaction folds it or `/clear` drops it. Skill bodies are loaded on demand, but they don't unload on their own."
+      },
+      {
+        "heading": "The two trigger paths",
+        "body": "Skills trigger two ways. Model-triggered: the model reads the ambient descriptions, decides the current task matches one, and invokes it — the harness then loads the body into context and the model follows it. User-triggered: you type the skill's slash name and force the load directly. Either way, the mechanics converge: trigger, inject body, proceed with the instructions in context.\n\nThe practical corollary is that the description is the routing function. Model-triggered activation is only as reliable as the description's match against real task phrasings — a vague description means a skill that never fires (or fires spuriously), no matter how good its body is. That's why skill authoring guidance obsesses over descriptions: they are the only part the model sees at decision time. Note also that some skills delegate their actual work to a subagent, which runs in a separate loop with its own context and returns only results — combining skill injection with context isolation so a heavy procedure never bloats the parent conversation at all."
+      },
+      {
+        "heading": "The cost model, and how skills compare to their neighbors",
+        "body": "Three cost tiers, worth memorizing as a contrast set. Hooks: zero tokens ever — they run in the harness process and never touch the payload. Custom slash commands: zero *ambient* tokens — a command file is injected into messages only when you type `/name`; an unused command is free. Skills: a permanent per-request description tax for every installed skill, plus the body cost on trigger and its re-send cost thereafter.\n\nThe description tax is small per skill and largely cache-absorbed — but only while the skill set is *stable*. Descriptions sit in the prefix, so installing or removing a skill perturbs the cached head and forces a fresh cache write on the next request. A churning skill inventory is quiet cache poison. And sprawl compounds: dozens of installed skills means a permanently fatter prefix and a harder routing problem for the model. The discipline follows directly from the mechanics: keep the always-on set lean, push rarely-used procedures into commands (zero ambient cost) or subagent-backed skills (isolated context), and treat every new skill as a standing line item on every future request, not a one-time install."
+      }
+    ],
+    "resources": [
+      { "label": "Claude Code docs — Skills", "url": "https://docs.claude.com/en/docs/claude-code/skills" },
+      { "label": "Claude Code docs — Manage costs effectively", "url": "https://docs.claude.com/en/docs/claude-code/costs" }
+    ]
+  }
+}

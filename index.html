@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>harness://quiz — Claude Code & Model Knowledge</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230c1016'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='16' fill='%23e0764f' text-anchor='middle'%3E%3F%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,450;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0c1016;
+    --bg-raise:#12161e;
+    --bg-card:#151a24;
+    --line:#232a37;
+    --line-bright:#31394a;
+    --ink:#e8e6e1;
+    --ink-dim:#9aa3b2;
+    --ink-faint:#5c6575;
+    --accent:#e0764f;
+    --accent-soft:rgba(224,118,79,.13);
+    --good:#4cc38a;
+    --good-soft:rgba(76,195,138,.12);
+    --bad:#e5534b;
+    --bad-soft:rgba(229,83,75,.12);
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:'IBM Plex Sans',-apple-system,'Segoe UI',sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:16px;
+    line-height:1.55;
+    min-height:100dvh;
+  }
+  /* atmosphere: faint grid + scanlines + top glow */
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(1200px 500px at 50% -10%, rgba(224,118,79,.07), transparent 60%),
+      repeating-linear-gradient(0deg, transparent 0 2px, rgba(255,255,255,.006) 2px 4px),
+      linear-gradient(rgba(255,255,255,.014) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.014) 1px, transparent 1px);
+    background-size:auto,auto,44px 44px,44px 44px;
+  }
+  .wrap{position:relative;z-index:1;max-width:680px;margin:0 auto;padding:0 20px calc(48px + env(safe-area-inset-bottom))}
+
+  /* ---------- header ---------- */
+  header{
+    display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+    padding:26px 0 18px;border-bottom:1px solid var(--line);
+    font-family:var(--mono);font-size:13px;color:var(--ink-faint);
+  }
+  header .path{color:var(--ink-dim)}
+  header .path b{color:var(--accent);font-weight:500}
+  header .blink{display:inline-block;width:8px;height:15px;background:var(--accent);
+    vertical-align:-2px;animation:blink 1.15s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  header .spacer{flex:1}
+  header .meta{font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+
+  /* ---------- shared ---------- */
+  .screen{display:none}
+  .screen.active{display:block;animation:rise .45s cubic-bezier(.2,.7,.2,1) both}
+  @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin:34px 0 10px}
+  h1{font-family:var(--mono);font-weight:600;font-size:clamp(26px,6vw,38px);line-height:1.15;letter-spacing:-.01em}
+  h1 .dim{color:var(--ink-faint);font-weight:400}
+  .sub{color:var(--ink-dim);margin-top:12px;max-width:52ch}
+
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;-webkit-tap-highlight-color:transparent}
+
+  /* ---------- level select ---------- */
+  .levels{display:grid;gap:12px;margin-top:28px}
+  .level{
+    text-align:left;border:1px solid var(--line);border-radius:10px;background:var(--bg-card);
+    padding:18px 18px 16px;position:relative;overflow:hidden;
+    transition:border-color .18s, transform .18s, background .18s;
+    animation:rise .5s cubic-bezier(.2,.7,.2,1) both;
+  }
+  .level:nth-child(1){animation-delay:.05s}.level:nth-child(2){animation-delay:.12s}
+  .level:nth-child(3){animation-delay:.19s}.level:nth-child(4){animation-delay:.26s}
+  .level::after{content:"→";position:absolute;right:18px;top:18px;font-family:var(--mono);
+    color:var(--ink-faint);transition:color .18s,transform .18s}
+  @media(hover:hover){
+    .level:hover{border-color:var(--accent);transform:translateY(-2px);background:var(--bg-raise)}
+    .level:hover::after{color:var(--accent);transform:translateX(3px)}
+  }
+  .level:active{transform:scale(.99)}
+  .level .lv{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--accent)}
+  .level .name{font-family:var(--mono);font-weight:600;font-size:18px;margin:6px 0 4px}
+  .level .desc{color:var(--ink-dim);font-size:14px;max-width:46ch}
+  .level .pool{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-top:10px}
+  .level .bars{display:inline-flex;gap:3px;margin-right:8px;vertical-align:-1px}
+  .level .bars i{width:4px;height:11px;background:var(--line-bright);border-radius:1px}
+  .level .bars i.on{background:var(--accent)}
+
+  /* ---------- quiz ---------- */
+  .hud{display:flex;align-items:center;gap:14px;margin:26px 0 8px;font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
+  .hud .score-live{margin-left:auto;color:var(--ink-faint)}
+  .hud .score-live b{color:var(--good);font-weight:500}
+  .meter{display:flex;gap:5px;margin-bottom:26px}
+  .meter i{flex:1;height:4px;border-radius:2px;background:var(--line);transition:background .3s}
+  .meter i.done-good{background:var(--good)}
+  .meter i.done-bad{background:var(--bad)}
+  .meter i.now{background:var(--accent);animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.45}}
+
+  .qtags{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .tag{font-family:var(--mono);font-size:11px;letter-spacing:.06em;padding:4px 9px;border-radius:5px;
+    border:1px solid var(--line-bright);color:var(--ink-dim)}
+  .tag.diff{color:var(--accent);border-color:rgba(224,118,79,.4);background:var(--accent-soft)}
+  .qtext{font-size:clamp(18px,4.6vw,21px);font-weight:450;line-height:1.45;letter-spacing:.002em}
+  code{
+    font-family:var(--mono);font-size:.88em;background:rgba(255,255,255,.055);
+    border:1px solid var(--line);border-radius:4px;padding:.08em .35em;white-space:nowrap;
+  }
+  .lesson code{background:rgba(224,118,79,.09);border-color:rgba(224,118,79,.25)}
+
+  .answers{display:grid;gap:10px;margin-top:22px}
+  .ans{
+    display:flex;gap:13px;align-items:flex-start;text-align:left;width:100%;
+    border:1px solid var(--line);border-radius:9px;background:var(--bg-card);
+    padding:13px 15px;font-size:15px;line-height:1.5;color:var(--ink);
+    transition:border-color .15s, background .15s, opacity .3s, transform .15s;
+  }
+  .ans .key{
+    font-family:var(--mono);font-size:12px;color:var(--ink-faint);border:1px solid var(--line-bright);
+    border-radius:5px;min-width:24px;height:24px;display:grid;place-items:center;flex-shrink:0;margin-top:1px;
+    transition:all .15s;
+  }
+  @media(hover:hover){
+    .ans:not([disabled]):hover{border-color:var(--accent);background:var(--bg-raise)}
+    .ans:not([disabled]):hover .key{border-color:var(--accent);color:var(--accent)}
+  }
+  .ans:not([disabled]):active{transform:scale(.995)}
+  .ans[disabled]{cursor:default}
+  .ans.correct{border-color:var(--good);background:var(--good-soft)}
+  .ans.correct .key{border-color:var(--good);color:var(--good)}
+  .ans.wrong{border-color:var(--bad);background:var(--bad-soft);animation:shake .3s}
+  .ans.wrong .key{border-color:var(--bad);color:var(--bad)}
+  .ans.faded{opacity:.38}
+  @keyframes shake{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  .verdict{display:none;align-items:center;gap:10px;margin-top:22px;font-family:var(--mono);font-weight:600;font-size:15px}
+  .verdict.show{display:flex;animation:rise .35s both}
+  .verdict.good{color:var(--good)}
+  .verdict.bad{color:var(--bad)}
+  .verdict .sym{font-size:18px}
+
+  .lesson{
+    display:none;margin-top:14px;border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:0 9px 9px 0;background:var(--bg-raise);padding:16px 18px;
+  }
+  .lesson.show{display:block;animation:rise .4s .08s both}
+  .lesson .lh{font-family:var(--mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--accent);margin-bottom:8px}
+  .lesson p{color:var(--ink);font-size:15px;line-height:1.65}
+
+  .learnmore{display:block;margin-top:14px;font-family:var(--mono);font-size:13px;color:var(--accent);
+    text-decoration:none;cursor:pointer;background:none;border:none;padding:0;text-align:left}
+  .learnmore:hover{text-decoration:underline}
+
+  /* ---------- topic lesson page ---------- */
+  .backlink{font-family:var(--mono);font-size:13px;color:var(--ink-dim);margin-top:26px;
+    display:inline-block;transition:color .15s}
+  .backlink:hover{color:var(--accent)}
+  .lp-title{font-family:var(--mono);font-weight:600;font-size:clamp(24px,5.6vw,32px);line-height:1.2;margin-top:10px}
+  .lp-intro{color:var(--ink-dim);margin-top:12px;font-size:16px;max-width:56ch}
+  .lp-section{margin-top:30px;border-top:1px solid var(--line);padding-top:22px}
+  .lp-section h2{font-family:var(--mono);font-weight:600;font-size:16px;color:var(--accent);margin-bottom:12px}
+  .lp-section p{font-size:15.5px;line-height:1.7;color:var(--ink);margin-bottom:12px;max-width:62ch}
+  .lp-resources{margin-top:34px;border:1px solid var(--line);border-radius:9px;background:var(--bg-card);padding:16px 18px}
+  .lp-resources .rh{font-family:var(--mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:10px}
+  .lp-resources a{display:block;font-family:var(--mono);font-size:13px;color:var(--accent);
+    text-decoration:none;padding:5px 0;word-break:break-word}
+  .lp-resources a:hover{text-decoration:underline}
+  .lp-resources a::before{content:"↗ ";color:var(--ink-faint)}
+
+  .nextrow{display:none;margin-top:22px}
+  .nextrow.show{display:flex;justify-content:flex-end;animation:rise .4s .15s both}
+  .btn{
+    font-family:var(--mono);font-weight:600;font-size:14px;letter-spacing:.04em;
+    padding:12px 26px;border-radius:8px;border:1px solid var(--accent);
+    background:var(--accent);color:#16100c;
+    transition:transform .15s, box-shadow .15s, background .15s;
+  }
+  @media(hover:hover){.btn:hover{transform:translateY(-1px);box-shadow:0 6px 22px rgba(224,118,79,.28)}}
+  .btn:active{transform:scale(.98)}
+  .btn.ghost{background:transparent;color:var(--accent)}
+  @media(hover:hover){.btn.ghost:hover{background:var(--accent-soft);box-shadow:none}}
+
+  /* ---------- results ---------- */
+  .result-head{display:flex;align-items:center;gap:26px;margin-top:38px;flex-wrap:wrap}
+  .ring{position:relative;width:132px;height:132px;flex-shrink:0}
+  .ring svg{transform:rotate(-90deg)}
+  .ring .track{stroke:var(--line);fill:none;stroke-width:8}
+  .ring .arc{stroke:var(--accent);fill:none;stroke-width:8;stroke-linecap:round;
+    stroke-dasharray:339.3;stroke-dashoffset:339.3;transition:stroke-dashoffset 1.1s cubic-bezier(.3,.7,.2,1) .3s}
+  .ring .num{position:absolute;inset:0;display:grid;place-items:center;
+    font-family:var(--mono);font-size:34px;font-weight:600}
+  .ring .num small{font-size:13px;color:var(--ink-faint);font-weight:400}
+  .result-title{font-family:var(--mono);font-weight:600;font-size:clamp(22px,5.4vw,30px);line-height:1.2}
+  .result-sub{color:var(--ink-dim);margin-top:8px;max-width:44ch}
+
+  .recap{margin-top:30px;border-top:1px solid var(--line);padding-top:8px}
+  .recap-row{display:flex;gap:12px;align-items:baseline;padding:10px 2px;border-bottom:1px solid var(--line);font-size:13.5px}
+  .recap-row .n{font-family:var(--mono);color:var(--ink-faint);font-size:12px;min-width:22px}
+  .recap-row .s{font-family:var(--mono);font-weight:600;min-width:14px}
+  .recap-row .s.g{color:var(--good)} .recap-row .s.b{color:var(--bad)}
+  .recap-row .t{color:var(--ink-dim);flex:1}
+  .recap-row .topic{font-family:var(--mono);font-size:11px;color:var(--ink-faint);white-space:nowrap}
+  .endbtns{display:flex;gap:12px;margin-top:30px;flex-wrap:wrap}
+
+  footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);
+    font-family:var(--mono);font-size:11px;color:var(--ink-faint);display:flex;gap:8px;flex-wrap:wrap}
+  @media(max-width:480px){
+    .recap-row .topic{display:none}
+    .result-head{gap:18px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="path">~/<b>claude-quiz</b> $ run<span class="blink"></span></span>
+    <span class="spacer"></span>
+    <span class="meta" id="header-meta">harness &amp; model knowledge</span>
+  </header>
+
+  <!-- ============ level select ============ -->
+  <section class="screen active" id="screen-start">
+    <div class="kicker">// select difficulty</div>
+    <h1>How deep does your<br>mental model go<span class="dim">?</span></h1>
+    <p class="sub">Ten questions, scattered across the stack — CLI, harness, API, model, and the Bedrock&nbsp;↔&nbsp;Anthropic divide. Every answer comes with the lesson behind it.</p>
+    <div class="levels" id="levels"></div>
+  </section>
+
+  <!-- ============ quiz ============ -->
+  <section class="screen" id="screen-quiz">
+    <div class="hud">
+      <span id="hud-q">Q 1/10</span>
+      <span class="score-live" id="hud-score"></span>
+    </div>
+    <div class="meter" id="meter"></div>
+    <div class="qtags" id="qtags"></div>
+    <div class="qtext" id="qtext"></div>
+    <div class="answers" id="answers"></div>
+    <div class="verdict" id="verdict"><span class="sym"></span><span class="txt"></span></div>
+    <div class="lesson" id="lesson"><div class="lh">// the lesson</div><p id="lesson-text"></p>
+      <button class="learnmore" id="btn-learnmore">Learn more about this topic →</button>
+    </div>
+    <div class="nextrow" id="nextrow"><button class="btn" id="btn-next">next →</button></div>
+  </section>
+
+  <!-- ============ topic lesson ============ -->
+  <section class="screen" id="screen-lesson">
+    <button class="backlink" id="btn-back-top">← back to quiz</button>
+    <div class="kicker">// topic lesson</div>
+    <h1 class="lp-title" id="lp-title"></h1>
+    <p class="lp-intro" id="lp-intro"></p>
+    <div id="lp-sections"></div>
+    <div class="lp-resources" id="lp-resources"></div>
+    <div class="nextrow show" style="justify-content:flex-start">
+      <button class="btn ghost" id="btn-back-bottom">← back to quiz</button>
+    </div>
+  </section>
+
+  <!-- ============ results ============ -->
+  <section class="screen" id="screen-end">
+    <div class="kicker">// session complete</div>
+    <div class="result-head">
+      <div class="ring">
+        <svg width="132" height="132" viewBox="0 0 120 120">
+          <circle class="track" cx="60" cy="60" r="54"></circle>
+          <circle class="arc" id="ring-arc" cx="60" cy="60" r="54"></circle>
+        </svg>
+        <div class="num"><span><span id="ring-num">0</span><small>/10</small></span></div>
+      </div>
+      <div>
+        <div class="result-title" id="result-title"></div>
+        <p class="result-sub" id="result-sub"></p>
+      </div>
+    </div>
+    <div class="recap" id="recap"></div>
+    <div class="endbtns">
+      <button class="btn" id="btn-retry">run again</button>
+      <button class="btn ghost" id="btn-level">change level</button>
+    </div>
+  </section>
+
+  <footer>
+    <span>keys 1–4 answer, ↵ next</span>
+  </footer>
+</div>
+
+<script src="questions.js"></script>
+<script src="lessons.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  const LEVELS = [
+    {rank:1, name:"Beginner",     tag:"L1", desc:"You've heard of Claude Code, maybe run it once. Orientation and vocabulary."},
+    {rank:2, name:"Practitioner", tag:"L2", desc:"You use it daily. Commands, modes, files, flags — the product surface."},
+    {rank:3, name:"Mechanic",     tag:"L3", desc:"You want the machinery: the loop, context assembly, caching, cost."},
+    {rank:4, name:"Expert",       tag:"L4", desc:"Protocol details, cache economics, provider deltas, model internals."},
+  ];
+  const QUIZ_LEN = 10;
+  const VERDICT_GOOD = ["Correct."];
+  const VERDICT_BAD  = ["Incorrect."];
+
+  const $ = id => document.getElementById(id);
+  const screens = {start:$("screen-start"), quiz:$("screen-quiz"), end:$("screen-end"), lesson:$("screen-lesson")};
+  const LESSONS = (typeof LESSON_BANK !== "undefined") ? LESSON_BANK : {};
+
+  let state = null; // {rank, questions, idx, score, answered, results:[{q, pickedIndex, right}]}
+
+  /* ---------- selection: sparse scatter across topics ---------- */
+  function shuffle(a){
+    for(let i=a.length-1;i>0;i--){
+      const j = Math.floor(Math.random()*(i+1));
+      [a[i],a[j]] = [a[j],a[i]];
+    }
+    return a;
+  }
+  function pickQuestions(rank){
+    const pool = QUESTION_BANK.filter(q => q.difficulty === rank);
+    // bucket by topic, shuffle within buckets and bucket order
+    const byTopic = new Map();
+    for(const q of pool){
+      if(!byTopic.has(q.topic)) byTopic.set(q.topic, []);
+      byTopic.get(q.topic).push(q);
+    }
+    const buckets = shuffle([...byTopic.values()].map(shuffle));
+    // interleave branches too: sort buckets round-robin by branch diversity
+    const picked = [];
+    const usedBranch = {};
+    while(picked.length < Math.min(QUIZ_LEN, pool.length)){
+      // prefer buckets whose branch is least used so far
+      let best = null, bestScore = Infinity;
+      for(const b of buckets){
+        if(!b.length) continue;
+        const branch = b[0].topic.split(".")[0];
+        const s = (usedBranch[branch]||0)*100 + Math.random();
+        if(s < bestScore){ bestScore = s; best = b; }
+      }
+      if(!best) break;
+      const q = best.shift();
+      usedBranch[q.topic.split(".")[0]] = (usedBranch[q.topic.split(".")[0]]||0)+1;
+      picked.push(q);
+    }
+    return shuffle(picked);
+  }
+
+  /* ---------- screens ---------- */
+  function show(name){
+    for(const k in screens) screens[k].classList.remove("active");
+    // force reflow so the entry animation replays
+    void screens[name].offsetWidth;
+    screens[name].classList.add("active");
+    window.scrollTo({top:0});
+  }
+
+  /* ---------- level select ---------- */
+  function renderLevels(){
+    const host = $("levels");
+    host.innerHTML = "";
+    for(const lv of LEVELS){
+      const btn = document.createElement("button");
+      btn.className = "level";
+      btn.innerHTML =
+        '<div class="lv">'+lv.tag+' // '+(["entry","daily driver","under the hood","below the api line"][lv.rank-1])+'</div>'+
+        '<div class="name">'+lv.name+'</div>'+
+        '<div class="desc">'+lv.desc+'</div>'+
+        '<div class="pool"><span class="bars">'+
+          [1,2,3,4].map(i=>'<i class="'+(i<=lv.rank?"on":"")+'"></i>').join("")+
+        '</span></div>';
+      btn.addEventListener("click", () => startQuiz(lv.rank));
+      host.appendChild(btn);
+    }
+  }
+
+  /* ---------- quiz flow ---------- */
+  function startQuiz(rank){
+    state = {rank, questions: pickQuestions(rank), idx:0, score:0, answered:false, results:[]};
+    $("header-meta").textContent = "level " + LEVELS[rank-1].tag + " · " + LEVELS[rank-1].name.toLowerCase();
+    renderQuestion();
+    show("quiz");
+  }
+
+  function renderMeter(){
+    const m = $("meter");
+    m.innerHTML = "";
+    for(let i=0;i<state.questions.length;i++){
+      const seg = document.createElement("i");
+      if(i < state.results.length) seg.className = state.results[i].right ? "done-good" : "done-bad";
+      else if(i === state.idx) seg.className = "now";
+      m.appendChild(seg);
+    }
+  }
+
+  function renderQuestion(){
+    const q = state.questions[state.idx];
+    state.answered = false;
+    $("hud-q").textContent = "Q " + (state.idx+1) + "/" + state.questions.length;
+    $("hud-score").innerHTML = state.results.length ? '<b>'+state.score+'</b> correct' : "";
+    renderMeter();
+    $("qtags").innerHTML =
+      '<span class="tag diff">L'+q.difficulty+'</span>'+
+      '<span class="tag">'+escapeHtml(q.topicName)+'</span>';
+    $("qtext").innerHTML = rich(q.question);
+
+    const host = $("answers");
+    host.innerHTML = "";
+    q.options.forEach((opt,i) => {
+      const b = document.createElement("button");
+      b.className = "ans";
+      b.dataset.i = i;
+      b.innerHTML = '<span class="key">'+(i+1)+'</span><span>'+rich(opt)+'</span>';
+      b.addEventListener("click", () => answer(i));
+      host.appendChild(b);
+    });
+
+    $("verdict").className = "verdict";
+    $("lesson").className = "lesson";
+    $("nextrow").className = "nextrow";
+    // replay screen-level entry animation for the question block
+    screens.quiz.classList.remove("active");
+    void screens.quiz.offsetWidth;
+    screens.quiz.classList.add("active");
+  }
+
+  function answer(i){
+    if(state.answered) return;
+    state.answered = true;
+    const q = state.questions[state.idx];
+    const right = i === q.correctIndex;
+    if(right) state.score++;
+    state.results.push({q, pickedIndex:i, right});
+
+    const btns = [...$("answers").children];
+    btns.forEach((b,bi) => {
+      b.disabled = true;
+      if(bi === q.correctIndex) b.classList.add("correct");
+      else if(bi === i) b.classList.add("wrong");
+      else b.classList.add("faded");
+    });
+
+    const v = $("verdict");
+    const pool = right ? VERDICT_GOOD : VERDICT_BAD;
+    v.querySelector(".sym").textContent = right ? "✓" : "✗";
+    v.querySelector(".txt").textContent = pool[Math.floor(Math.random()*pool.length)];
+    v.className = "verdict show " + (right ? "good" : "bad");
+
+    $("lesson-text").innerHTML = rich(q.explanation);
+    $("btn-learnmore").style.display = LESSONS[q.topic] ? "" : "none";
+    $("lesson").className = "lesson show";
+    $("btn-next").textContent = state.idx === state.questions.length-1 ? "see score →" : "next →";
+    $("nextrow").className = "nextrow show";
+    $("hud-score").innerHTML = '<b>'+state.score+'</b> correct';
+    renderMeter();
+  }
+
+  function next(){
+    if(!state.answered) return;
+    if(state.idx === state.questions.length-1){ renderEnd(); show("end"); return; }
+    state.idx++;
+    renderQuestion();
+  }
+
+  /* ---------- topic lesson page ---------- */
+  function openLesson(topicId){
+    const L = LESSONS[topicId];
+    if(!L) return;
+    $("lp-title").textContent = L.title;
+    $("lp-intro").innerHTML = rich(L.intro || "");
+    const host = $("lp-sections");
+    host.innerHTML = "";
+    (L.sections || []).forEach(s => {
+      const d = document.createElement("div");
+      d.className = "lp-section";
+      d.innerHTML = "<h2>" + escapeHtml(s.heading) + "</h2>" +
+        s.body.split(/\n\n+/).map(p => "<p>" + rich(p) + "</p>").join("");
+      host.appendChild(d);
+    });
+    const res = $("lp-resources");
+    if(L.resources && L.resources.length){
+      res.style.display = "";
+      res.innerHTML = '<div class="rh">// official resources</div>' +
+        L.resources.map(r =>
+          '<a href="' + escapeHtml(r.url) + '" target="_blank" rel="noopener">' + escapeHtml(r.label) + '</a>'
+        ).join("");
+    } else {
+      res.style.display = "none";
+    }
+    show("lesson");
+  }
+
+  /* ---------- results ---------- */
+  const GRADES = [
+    {min:0, title:"Room to grow.",   sub:"Everything from here is upside. The lessons you just read are the fastest way up — rerun and watch them closely."},
+    {min:4, title:"Getting there.",  sub:"The surface is there; the machinery underneath is where the next points live. The recap below shows where to focus."},
+    {min:7, title:"Solid.",          sub:"A strong mental model with a few gaps. The recap below shows exactly which topics to re-read."},
+    {min:9, title:"Excellent.",      sub:"Near-perfect. The remaining misses are usually the fine print — worth one more pass."},
+    {min:10,title:"Perfect score.",  sub:"Ten for ten. Try a higher level — or hand the quiz to a colleague."},
+  ];
+  function renderEnd(){
+    const total = state.questions.length;
+    const g = [...GRADES].reverse().find(g => state.score >= g.min);
+    $("result-title").textContent = g.title;
+    $("result-sub").textContent = g.sub;
+
+    const recap = $("recap");
+    recap.innerHTML = "";
+    state.results.forEach((r,i) => {
+      const row = document.createElement("div");
+      row.className = "recap-row";
+      row.innerHTML =
+        '<span class="n">'+String(i+1).padStart(2,"0")+'</span>'+
+        '<span class="s '+(r.right?"g":"b")+'">'+(r.right?"✓":"✗")+'</span>'+
+        '<span class="t">'+rich(truncate(r.q.question,90))+'</span>'+
+        '<span class="topic">'+escapeHtml(truncate(r.q.topicName,26))+'</span>';
+      recap.appendChild(row);
+    });
+
+    // animate ring + count
+    const C = 2*Math.PI*54;
+    const arc = $("ring-arc");
+    arc.style.strokeDasharray = C;
+    arc.style.strokeDashoffset = C;
+    $("ring-num").textContent = "0";
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      arc.style.strokeDashoffset = C * (1 - state.score/total);
+    }));
+    let shown = 0;
+    const t = setInterval(() => {
+      shown++;
+      if(shown > state.score){ clearInterval(t); return; }
+      $("ring-num").textContent = shown;
+    }, 1100/Math.max(state.score,1));
+  }
+
+  /* ---------- utils & wiring ---------- */
+  function escapeHtml(s){
+    return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  }
+  // escape, then render `inline code` spans (pairs only; stray backticks stay literal)
+  function rich(s){
+    return escapeHtml(s).replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  }
+  function truncate(s,n){ return s.length > n ? s.slice(0,n-1)+"…" : s; }
+
+  $("btn-next").addEventListener("click", next);
+  $("btn-learnmore").addEventListener("click", () => openLesson(state.questions[state.idx].topic));
+  $("btn-back-top").addEventListener("click", () => show("quiz"));
+  $("btn-back-bottom").addEventListener("click", () => show("quiz"));
+  $("btn-retry").addEventListener("click", () => startQuiz(state.rank));
+  $("btn-level").addEventListener("click", () => {
+    $("header-meta").textContent = "harness & model knowledge";
+    show("start");
+  });
+
+  document.addEventListener("keydown", e => {
+    if(!screens.quiz.classList.contains("active")) return;
+    if(!state) return;
+    if(!state.answered && ["1","2","3","4"].includes(e.key)){
+      const b = $("answers").children[Number(e.key)-1];
+      if(b) b.click();
+    } else if(state.answered && (e.key === "Enter" || e.key === " ")){
+      e.preventDefault();
+      next();
+    }
+  });
+
+  renderLevels();
+})();
+</script>
+</body>
+</html>
